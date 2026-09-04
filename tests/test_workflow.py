@@ -7,6 +7,16 @@ from agents.writer_agent import WriterAgent
 from orchestrator.workflow import run_workflow
 
 
+def test_workflow_result_can_be_serialized_to_json():
+    result = run_workflow()
+    payload = result.model_dump(mode="json")
+    assert isinstance(payload, dict)
+    assert len(payload["ideas"]) >= 10
+    assert len(payload["top_3"]) == 3
+    assert len(payload["blog_posts"]) == 3
+    assert result.to_json()
+
+
 def test_mock_workflow_data_flow_is_connected():
     trend_results = TrendAgent().run()
     seo_results = SEOAgent().run(trend_results)
@@ -41,8 +51,28 @@ def test_mock_workflow_data_flow_is_connected():
         assert post.title == item.idea.title
         assert post.keyword == item.idea.keyword
         assert post.content
-        assert item.reason in post.summary
-        assert item.idea.rifit_connection in post.content
+        assert post.summary
+        assert post.cta
+
+        for field in ["검색 의도", "브랜드 평가", "평가 점수", "현재 적합도"]:
+            assert field not in post.content
+            assert field not in post.summary
+
+        assert str(item.reason) not in post.content
+        assert str(item.reason) not in post.summary
+        assert str(item.total_score) not in post.content
+        assert str(item.total_score) not in post.summary
+
+        if item.brand_evaluation is not None:
+            assert item.brand_evaluation.rationale not in post.content
+            assert item.brand_evaluation.rationale not in post.summary
+            assert str(item.brand_evaluation.fit_score) not in post.content
+            assert str(item.brand_evaluation.fit_score) not in post.summary
+
+        assert "fit_score" not in post.content
+        assert "fit_score" not in post.summary
+        assert "critic" not in post.content.lower()
+        assert "critic" not in post.summary.lower()
 
 
 def test_workflow_result_contains_connected_data():
