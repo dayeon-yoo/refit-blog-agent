@@ -157,6 +157,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Generated workflow outputs are kept local only and must not be committed.
+outputs/
+
 # Spyder project settings
 .spyderproject
 .spyproject
