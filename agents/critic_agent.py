@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional
 
 from llm.client import LLMClient, get_llm_client
@@ -9,8 +10,11 @@ from models.schemas import BlogIdea, BrandEvaluation, ScoredIdea
 class CriticAgent:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.client = llm_client or get_llm_client()
+        prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "critic.txt"
+        self.prompt = prompt_path.read_text(encoding="utf-8").strip()
 
     def score(self, ideas: List[BlogIdea], brand_evaluations: Optional[List[BrandEvaluation]] = None) -> List[ScoredIdea]:
+        prompt = self.prompt
         eval_map = {evaluation.topic: evaluation for evaluation in (brand_evaluations or [])}
         scored = []
         for index, idea in enumerate(ideas, start=1):

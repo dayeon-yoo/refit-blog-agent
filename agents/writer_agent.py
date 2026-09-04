@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from llm.client import LLMClient, get_llm_client
@@ -9,6 +10,8 @@ from models.schemas import BlogPost, ScoredIdea
 class WriterAgent:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.client = llm_client or get_llm_client()
+        prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "writer.txt"
+        self.prompt = prompt_path.read_text(encoding="utf-8").strip()
 
     def write(self, idea: ScoredIdea) -> BlogPost:
         title = idea.idea.title

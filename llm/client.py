@@ -48,20 +48,27 @@ class OpenAILLMClient(LLMClient):
         self.client = OpenAI(api_key=self.api_key)
 
     def generate_structured(self, prompt: str, schema: Type[T], payload: Dict[str, Any]) -> T:
-        response = self.client.beta.chat.completions.parse(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-            ],
-            response_format=schema,
-        )
-        parsed = response.choices[0].message.parsed
-        if parsed is None:
-            raise ValueError("OpenAI returned no parsed result for the schema")
-        return parsed
+        if not payload:
+            raise ValueError(f"Empty payload for schema {schema.__name__}")
+        try:
+            response = self.client.beta.chat.completions.parse(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                ],
+                response_format=schema,
+            )
+            parsed = response.choices[0].message.parsed
+            if parsed is None:
+                raise ValueError("OpenAI returned no parsed result for the schema")
+            return parsed
+        except Exception as exc:
+            raise RuntimeError(f"OpenAI request failed for schema {schema.__name__}: {exc}") from exc
 
     def generate_many(self, prompt: str, schema: Type[T], payloads: List[Dict[str, Any]]) -> List[T]:
+        if not payloads:
+            return []
         return [self.generate_structured(prompt, schema, payload) for payload in payloads]
 
 
@@ -69,4 +76,6 @@ def get_llm_client() -> LLMClient:
     settings = get_settings()
     if settings.mock_mode:
         return MockLLMClient()
+    if not settings.openai_api_key:
+        raise ValueError("OPENAI_API_KEY is missing while MOCK_MODE=false")
     return OpenAILLMClient(api_key=settings.openai_api_key, model=settings.model_name)

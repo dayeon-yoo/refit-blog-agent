@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional
 
 from llm.client import LLMClient, get_llm_client
@@ -9,6 +10,8 @@ from models.schemas import SEOResult
 class SEOAgent:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.client = llm_client or get_llm_client()
+        prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "seo.txt"
+        self.prompt = prompt_path.read_text(encoding="utf-8").strip()
 
     def _keyword_for_topic(self, topic: str) -> str:
         keyword_map = {
@@ -26,7 +29,7 @@ class SEOAgent:
         return keyword_map.get(topic, topic)
 
     def run(self, trend_results) -> List[SEOResult]:
-        prompt = "Trend context를 바탕으로 리핏 블로그에 적합한 검색 키워드를 생성한다."
+        prompt = self.prompt
 
         if not trend_results:
             fallback_payloads = [

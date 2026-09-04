@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional
 
 from llm.client import LLMClient, get_llm_client
@@ -9,9 +10,11 @@ from models.schemas import BlogIdea, BrandEvaluation
 class BrandAgent:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.client = llm_client or get_llm_client()
+        prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "brand.txt"
+        self.prompt = prompt_path.read_text(encoding="utf-8").strip()
 
     def run(self, ideas: List[BlogIdea]) -> List[BrandEvaluation]:
-        prompt = "리핏 브랜드 방향성, 서비스 가치와 콘텐츠 원칙을 기준으로 아이디어 적합도를 평가한다."
+        prompt = self.prompt
         guidelines = {
             "themes": ["의류 순환", "헌옷 수거", "의류 재사용", "재판매", "재활용", "빈티지 의류", "의류 관리", "지속가능한 패션"],
             "content_rules": [

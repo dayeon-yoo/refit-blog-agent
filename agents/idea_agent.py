@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional
 
 from llm.client import LLMClient, get_llm_client
@@ -9,6 +10,8 @@ from models.schemas import BlogIdea
 class IdeaGenerator:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.client = llm_client or get_llm_client()
+        prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "idea.txt"
+        self.prompt = prompt_path.read_text(encoding="utf-8").strip()
 
     def _fallback_candidates(self) -> List[dict]:
         return [
@@ -39,7 +42,7 @@ class IdeaGenerator:
         ]
 
     def generate(self, trend_results, seo_results, brand_context=None) -> List[BlogIdea]:
-        prompt = "Trend와 SEO context를 바탕으로 리핏 블로그에 적합한 아이디어 후보를 생성한다."
+        prompt = self.prompt
 
         if not trend_results and not seo_results:
             return self.client.generate_many(prompt, BlogIdea, self._fallback_candidates())

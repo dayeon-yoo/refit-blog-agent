@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Optional
 
 from llm.client import LLMClient, get_llm_client
@@ -9,9 +10,11 @@ from models.schemas import TrendResult
 class TrendAgent:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.client = llm_client or get_llm_client()
+        prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "trend.txt"
+        self.prompt = prompt_path.read_text(encoding="utf-8").strip()
 
     def run(self) -> List[TrendResult]:
-        prompt = "최근 리핏 블로그 콘텐츠로 확장 가능한 의류 순환 트렌드 주제를 식별한다."
+        prompt = self.prompt
         payloads = [
             {
                 "topic": "가을 시즌 의류 정리",
