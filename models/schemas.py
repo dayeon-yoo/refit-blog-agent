@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -57,18 +59,40 @@ class ScoredIdea(RIFITBaseModel):
     brand_evaluation: Optional[BrandEvaluation] = None
 
 
+class ImagePrompt(RIFITBaseModel):
+    placement: str
+    purpose: str
+    prompt: str
+    image_type: str
+    alt_text: str
+
+
+class ImagePlan(RIFITBaseModel):
+    images: List[ImagePrompt]
+
+
 class BlogPost(RIFITBaseModel):
     title: str
     keyword: str
     content: str
     summary: str
     cta: str
+    image_plan: Optional[ImagePlan] = None
 
 
 class WorkflowResult(RIFITBaseModel):
     ideas: List[BlogIdea]
     top_3: List[ScoredIdea]
     blog_posts: List[BlogPost]
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.model_dump(mode="json"), ensure_ascii=False, indent=indent)
+
+    def save_json(self, path: str | Path, indent: int = 2) -> Path:
+        output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(self.to_json(indent=indent), encoding="utf-8")
+        return output_path
 
     def __contains__(self, key: str) -> bool:
         return key in self.model_fields_set or hasattr(self, key)

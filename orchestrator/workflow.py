@@ -3,6 +3,7 @@ from __future__ import annotations
 from agents.brand_agent import BrandAgent
 from agents.critic_agent import CriticAgent
 from agents.idea_agent import IdeaGenerator
+from agents.image_agent import ImageAgent
 from agents.seo_agent import SEOAgent
 from agents.trend_agent import TrendAgent
 from agents.writer_agent import WriterAgent
@@ -44,7 +45,8 @@ def run_workflow() -> WorkflowResult:
         top_3 = CriticAgent().top_3(idea_candidates[:3], brand_evaluations[:3])
 
     writer = WriterAgent()
-    blog_posts = [writer.write(idea) for idea in top_3]
+    image_agent = ImageAgent()
+    blog_posts = [image_agent.plan(writer.write(idea)) for idea in top_3]
 
     return WorkflowResult(
         ideas=idea_candidates,

@@ -1,6 +1,7 @@
 from agents.brand_agent import BrandAgent
 from agents.critic_agent import CriticAgent
 from agents.idea_agent import IdeaGenerator
+from agents.image_agent import ImageAgent
 from agents.seo_agent import SEOAgent
 from agents.trend_agent import TrendAgent
 from agents.writer_agent import WriterAgent
@@ -23,7 +24,8 @@ def test_mock_workflow_data_flow_is_connected():
     ideas = IdeaGenerator().generate(trend_results, seo_results)
     brand_evaluations = BrandAgent().run(ideas)
     top_3 = CriticAgent().top_3(ideas, brand_evaluations)
-    blog_posts = [WriterAgent().write(item) for item in top_3]
+    image_agent = ImageAgent()
+    blog_posts = [image_agent.plan(WriterAgent().write(item)) for item in top_3]
 
     assert len(trend_results) > 0
     assert len(seo_results) > 0
@@ -53,6 +55,19 @@ def test_mock_workflow_data_flow_is_connected():
         assert post.content
         assert post.summary
         assert post.cta
+        assert post.image_plan is not None
+        assert post.image_plan.images
+
+        for image in post.image_plan.images:
+            assert image.placement
+            assert image.purpose
+            assert image.prompt
+            assert image.image_type
+            assert image.alt_text
+            assert "검색 의도" not in image.prompt
+            assert "브랜드 평가" not in image.prompt
+            assert "critic" not in image.prompt.lower()
+            assert "fit_score" not in image.prompt.lower()
 
         for field in ["검색 의도", "브랜드 평가", "평가 점수", "현재 적합도"]:
             assert field not in post.content
@@ -95,3 +110,11 @@ def test_workflow_result_contains_connected_data():
         assert post.content
         assert post.summary
         assert post.cta
+        assert post.image_plan is not None
+        assert len(post.image_plan.images) >= 3
+        for image in post.image_plan.images:
+            assert image.placement
+            assert image.purpose
+            assert image.prompt
+            assert image.image_type
+            assert image.alt_text
