@@ -25,9 +25,13 @@ class LLMClient(ABC):
 
 class MockLLMClient(LLMClient):
     def generate_structured(self, prompt: str, schema: Type[T], payload: Dict[str, Any]) -> T:
+        if not payload:
+            raise ValueError(f"Empty payload for schema {schema.__name__}")
         return schema.model_validate(payload)
 
     def generate_many(self, prompt: str, schema: Type[T], payloads: List[Dict[str, Any]]) -> List[T]:
+        if not payloads:
+            return []
         return [schema.model_validate(item) for item in payloads]
 
 

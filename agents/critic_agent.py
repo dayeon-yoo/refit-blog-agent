@@ -3,28 +3,37 @@ from __future__ import annotations
 from typing import List, Optional
 
 from llm.client import LLMClient, get_llm_client
-from models.schemas import BlogIdea, ScoredIdea
+from models.schemas import BlogIdea, BrandEvaluation, ScoredIdea
 
 
 class CriticAgent:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.client = llm_client or get_llm_client()
 
-    def score(self, ideas: List[BlogIdea]) -> List[ScoredIdea]:
+    def score(self, ideas: List[BlogIdea], brand_evaluations: Optional[List[BrandEvaluation]] = None) -> List[ScoredIdea]:
+        eval_map = {evaluation.topic: evaluation for evaluation in (brand_evaluations or [])}
         scored = []
         for index, idea in enumerate(ideas, start=1):
+            brand_eval = eval_map.get(idea.title)
+            brand_fit_score = brand_eval.fit_score if brand_eval else 0.6
+            search_intent = 18 if "정보 탐색" in idea.search_intent or "문제 해결" in idea.search_intent else 15
+            informativeness = 18 if len(idea.angle) > 20 else 15
+            seasonality = min(15, max(8, int(idea.seasonality * 20)))
+            brand_fit = int(round(brand_fit_score * 20))
+            differentiation = 12 if any(keyword in idea.title.lower() for keyword in ["처리", "정리", "순환", "헌옷", "재사용", "보관"]) else 10
+            expandability = 9 if any(keyword in idea.title.lower() for keyword in ["정리", "처리", "관리", "순환", "보관"]) else 8
             scores = {
-                "search_intent": 18 if "정보 탐색" in idea.search_intent or "문제 해결" in idea.search_intent else 15,
-                "informativeness": 18,
-                "seasonality": int(idea.seasonality * 20),
-                "brand_fit": 20 if "수거" in idea.rifit_connection or "순환" in idea.rifit_connection else 16,
-                "differentiation": 12 if "처리" in idea.title or "정리" in idea.title else 10,
-                "expandability": 9,
+                "search_intent": search_intent,
+                "informativeness": informativeness,
+                "seasonality": seasonality,
+                "brand_fit": brand_fit,
+                "differentiation": differentiation,
+                "expandability": expandability,
             }
             total = sum(scores.values())
             reason = (
-                "실제 사용자 문제와 계절 변화가 연결되어 있어 검색 의도와 정보를 모두 잡기 좋고, "
-                "리핏의 의류 순환 메시지와도 자연스럽게 이어진다."
+                f"{idea.title}은 사용자가 겪는 실제 문제를 다루고 있어 검색 의도와 정보성을 확보했고, "
+                f"브랜드 적합도는 {brand_fit_score:.2f}로 리핏의 의류 순환 메시지와 자연스럽게 연결된다."
             )
             scored.append(
                 ScoredIdea(
@@ -33,9 +42,10 @@ class CriticAgent:
                     total_score=total,
                     reason=reason,
                     idea=idea,
+                    brand_evaluation=brand_eval,
                 )
             )
         return sorted(scored, key=lambda item: item.total_score, reverse=True)
 
-    def top_3(self, ideas: List[BlogIdea]) -> List[ScoredIdea]:
-        return self.score(ideas)[:3]
+    def top_3(self, ideas: List[BlogIdea], brand_evaluations: Optional[List[BrandEvaluation]] = None) -> List[ScoredIdea]:
+        return self.score(ideas, brand_evaluations)[:3]

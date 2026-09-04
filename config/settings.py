@@ -4,21 +4,20 @@ import os
 from functools import lru_cache
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 load_dotenv()
 
 
 class Settings(BaseModel):
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
+
     openai_api_key: str = Field(default="")
     model_name: str = Field(default="gpt-4o-mini")
     environment: str = Field(default="local")
     debug: bool = Field(default=True)
     mock_mode: bool = Field(default=True)
-
-    class Config:
-        extra = "ignore"
 
 
 @lru_cache(maxsize=1)

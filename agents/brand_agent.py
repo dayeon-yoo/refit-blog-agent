@@ -3,45 +3,52 @@ from __future__ import annotations
 from typing import List, Optional
 
 from llm.client import LLMClient, get_llm_client
-from models.schemas import BrandEvaluation
+from models.schemas import BlogIdea, BrandEvaluation
 
 
 class BrandAgent:
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.client = llm_client or get_llm_client()
 
-    def run(self, ideas: List[str]) -> List[BrandEvaluation]:
-        prompt = "리핏 브랜드 방향성과 연결되는지 평가한다."
-        evaluations = [
-            {
-                "topic": "여름 지나고 남은 반팔, 어떻게 처리할까?",
-                "fit_score": 0.97,
-                "rationale": "계절성, 사용자 문제, 의류 처리, 의류 순환이 자연스럽게 연결된다.",
-                "brand_alignment": "high",
-            },
-            {
-                "topic": "헌옷 버리는 법, 리핏이 추천하는 의류 순환 흐름",
-                "fit_score": 0.96,
-                "rationale": "리핏의 핵심 가치를 설명하면서도 정보성을 유지할 수 있다.",
-                "brand_alignment": "high",
-            },
-            {
-                "topic": "의류 재사용, 왜 버리기보다 순환이 좋은가",
-                "fit_score": 0.92,
-                "rationale": "지속가능한 패션과 행동 가이드가 연결되며 브랜드 방향성과 부합한다.",
-                "brand_alignment": "high",
-            },
-            {
-                "topic": "옷장 정리 시즌별 체크리스트",
-                "fit_score": 0.84,
-                "rationale": "실용적이지만 리핏 연결을 더 잘 살려야 한다.",
-                "brand_alignment": "medium",
-            },
-            {
-                "topic": "가을 코디 10가지",
-                "fit_score": 0.42,
-                "rationale": "패션 콘텐츠는 매력적이지만 리핏의 서비스와 직접적 연결은 약하다.",
-                "brand_alignment": "low",
-            },
-        ]
+    def run(self, ideas: List[BlogIdea]) -> List[BrandEvaluation]:
+        prompt = "리핏 브랜드 방향성, 서비스 가치와 콘텐츠 원칙을 기준으로 아이디어 적합도를 평가한다."
+        guidelines = {
+            "themes": ["의류 순환", "헌옷 수거", "의류 재사용", "재판매", "재활용", "빈티지 의류", "의류 관리", "지속가능한 패션"],
+            "content_rules": [
+                "정보성 중심",
+                "실제 사용자 문제 해결",
+                "친근하고 이해하기 쉬운 표현",
+                "과도한 환경 캠페인 느낌 금지",
+                "노골적인 광고성 금지",
+                "억지스러운 리핏 연결 금지",
+            ],
+        }
+
+        evaluations = []
+        for idea in ideas:
+            fit = 0.5
+            if any(keyword in idea.rifit_connection.lower() for keyword in ["수거", "순환", "재사용", "재활용", "관리"]):
+                fit += 0.35
+            if any(keyword in idea.title.lower() for keyword in ["정리", "처리", "관리", "순환", "헌옷", "재사용", "재활용"]):
+                fit += 0.1
+            if "코디" in idea.title.lower() or "패션" in idea.title.lower():
+                fit -= 0.2
+
+            fit = max(0.0, min(1.0, round(fit, 2)))
+            brand_alignment = "high" if fit >= 0.8 else "medium" if fit >= 0.6 else "low"
+            rationale = (
+                f"{idea.title}은 실제 사용자 고민과 {', '.join(guidelines['themes'][:3])} 흐름을 연결하는 측면에서 "
+                f"리핏의 브랜드 방향성과 자연스럽게 맞물린다."
+                if brand_alignment != "low"
+                else "패션 톤은 매력적이지만 리핏의 핵심 가치와 연결을 더 명확히 해야 한다."
+            )
+            evaluations.append(
+                {
+                    "topic": idea.title,
+                    "fit_score": fit,
+                    "rationale": rationale,
+                    "brand_alignment": brand_alignment,
+                }
+            )
+
         return self.client.generate_many(prompt, BrandEvaluation, evaluations)

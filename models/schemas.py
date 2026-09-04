@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 try:
@@ -14,28 +14,32 @@ except AttributeError:  # pragma: no cover
     BaseModel.model_validate = classmethod(_model_validate)
 
 
-class TrendResult(BaseModel):
+class RIFITBaseModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
+
+class TrendResult(RIFITBaseModel):
     topic: str
     reason: str
     source: str = "trend-monitor"
     relevance_score: float = Field(..., ge=0.0, le=1.0)
 
 
-class SEOResult(BaseModel):
+class SEOResult(RIFITBaseModel):
     keyword: str
     search_intent: str
     seasonality: float = Field(..., ge=0.0, le=1.0)
     content_potential: float = Field(..., ge=0.0, le=1.0)
 
 
-class BrandEvaluation(BaseModel):
+class BrandEvaluation(RIFITBaseModel):
     topic: str
     fit_score: float = Field(..., ge=0.0, le=1.0)
     rationale: str
     brand_alignment: str
 
 
-class BlogIdea(BaseModel):
+class BlogIdea(RIFITBaseModel):
     title: str
     keyword: str
     search_intent: str
@@ -44,15 +48,16 @@ class BlogIdea(BaseModel):
     seasonality: float = Field(..., ge=0.0, le=1.0)
 
 
-class ScoredIdea(BaseModel):
+class ScoredIdea(RIFITBaseModel):
     idea_id: str
     scores: Dict[str, int]
     total_score: int = Field(..., ge=0, le=100)
     reason: str
     idea: BlogIdea
+    brand_evaluation: Optional[BrandEvaluation] = None
 
 
-class BlogPost(BaseModel):
+class BlogPost(RIFITBaseModel):
     title: str
     keyword: str
     content: str
@@ -60,7 +65,7 @@ class BlogPost(BaseModel):
     cta: str
 
 
-class WorkflowResult(BaseModel):
+class WorkflowResult(RIFITBaseModel):
     ideas: List[BlogIdea]
     top_3: List[ScoredIdea]
     blog_posts: List[BlogPost]
