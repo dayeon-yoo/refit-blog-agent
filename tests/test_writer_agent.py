@@ -127,6 +127,32 @@ def test_non_numeric_title_generates_normally():
     assert "보관" in post.content
 
 
+def test_writer_starts_with_a_reader_situation_not_a_generic_definition():
+    post = WriterAgent(MockLLMClient()).write(make_idea(
+        "가을 옷장 정리로 새로운 스타일 찾기",
+        "가을 옷장 정리",
+        "작년에 입던 가을 옷을 다시 조합해 새로운 스타일을 찾는 방법",
+        "옷장 속 기존 아이템을 점검하고 조합을 바꾸는 실천 가이드",
+    ))
+
+    opening = post.content.split("\n\n", 2)[1]
+    generic_openings = ["중요한 과정입니다", "필요한 과정입니다", "효율적인 방법입니다"]
+    assert not any(phrase in opening for phrase in generic_openings)
+    assert any(phrase in opening for phrase in ["고민하다 보면", "망설여질 때", "살펴보겠습니다"])
+
+
+def test_writer_keeps_metadata_out_of_summary_and_cta():
+    post = WriterAgent(MockLLMClient()).write(make_idea(
+        "헌옷 정리 방법",
+        "헌옷 정리",
+        "입지 않는 옷을 정리하고 다시 활용할 기준",
+    ))
+
+    output = f"{post.summary} {post.cta}".lower()
+    for phrase in ["검색 의도", "seo", "prompt", "agent", "critic", "workflow", "metadata"]:
+        assert phrase not in output
+
+
 def test_writer_does_not_use_fixed_template_headings():
     post = WriterAgent(MockLLMClient()).write(make_idea(
         "옷장 정리 팁",

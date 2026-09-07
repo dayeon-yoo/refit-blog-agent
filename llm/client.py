@@ -53,29 +53,42 @@ class MockLLMClient(LLMClient):
         angle = str(payload.get("angle", "")).strip()
         summary = str(payload.get("summary", "")).strip()
         count = payload.get("required_item_count")
+        rifit_connection = str(payload.get("rifit_connection", "")).strip()
 
         intro = angle or summary or keyword or title
-        sections = [f"## {title}", f"{intro}를 중심으로 실제로 적용할 수 있는 내용을 정리했습니다."]
+        sections = [
+            f"## {title}",
+            f"{title}을 고민하다 보면, 막상 어디서부터 시작해야 할지 망설여질 때가 있는데요."
+            f" {intro}를 기준으로 지금 할 수 있는 작은 방법부터 살펴보겠습니다.",
+        ]
         if isinstance(count, int) and count > 0:
             for index in range(1, count + 1):
+                lead = [
+                    "먼저 현재 상태를 가볍게 확인해 보세요.",
+                    "이 단계에서는 준비물을 많이 늘리기보다 집에 있는 것을 먼저 살펴보면 좋습니다.",
+                    "실제로 해보면 생각보다 간단한 부분부터 손이 가는데요.",
+                ][(index - 1) % 3]
                 sections.extend([
                     f"## {index}. {title} 핵심 항목 {index}",
-                    f"{intro}와 연결된 {index}번째 실천 항목입니다. 현재 상황에 맞게 준비하고 순서대로 적용해 보세요.",
+                    f"{lead} {intro}와 연결된 {index}번째 방법은 현재 상황에 맞게 순서를 조절해 적용해 보세요.",
                 ])
         else:
             for index in range(1, 4):
                 sections.extend([
-                    f"## 핵심 포인트 {index}",
-                    f"{intro}를 기준으로 {index}번째로 확인할 내용을 구체적으로 살펴보세요."
+                    f"## {title}을 시작하기 전에 확인할 점 {index}",
+                    f"{intro}를 살펴볼 때는 한 번에 모두 바꾸려 하지 말고, {index}번째로 눈에 들어오는 부분부터 확인해 보세요."
                     " 준비물과 현재 상태를 먼저 점검하면 시행착오를 줄일 수 있습니다.",
                 ])
-        sections.append("마지막으로 작은 범위에서 먼저 실천해 보고 자신에게 맞는 방법을 이어가 보세요.")
+        cta = "오늘은 가장 부담 없는 항목 하나만 골라 실제로 해보세요."
+        if rifit_connection:
+            cta = f"{rifit_connection}이 필요한 순간이라면, 오늘 정리한 기준을 먼저 적용해 보세요."
+        sections.append(cta)
         return {
             "title": title,
             "keyword": keyword,
             "content": "\n\n".join(sections),
             "summary": summary or f"{title}에 대한 실천 방법을 정리했습니다.",
-            "cta": "오늘 가능한 항목 하나부터 차근차근 실천해 보세요.",
+            "cta": cta,
         }
 
 

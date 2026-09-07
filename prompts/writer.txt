@@ -19,10 +19,28 @@ Content contract rules:
 Writing requirements:
 - Write natural Korean that can be published directly on Naver Blog.
 - Use friendly, polite language with short mobile-readable paragraphs.
-- Flow from reader situation, to concrete explanation, to practical action.
+- Open with a recognizable everyday situation, hesitation, or question related to this specific BlogIdea. Do not begin with a textbook definition such as "~은 중요한 과정입니다".
+- Speak to the reader naturally with occasional expressions such as "~인데요", "~있죠", and "~해보세요". Use them selectively rather than in every sentence.
+- For each important point, connect why it matters to what the reader can actually do, preferably with a concrete example.
+- Keep paragraphs to roughly two to four sentences for mobile reading. Vary sentence endings and paragraph rhythm.
 - Use useful headings and numbered sections when the contract calls for them.
-- Avoid unsupported statistics, repetitive keyword stuffing, and generic AI-style phrasing.
+- Mix informative and question-style headings when they fit the subject, without forcing every heading into a question.
+- Avoid unsupported statistics, repetitive keyword stuffing, generic AI-style phrasing, and abstract claims without an example.
+- Avoid exaggerated advertising language such as "지금 바로 확인해보세요", "완벽한 스타일을 완성해보세요", or "놀라운 변화를 경험해보세요".
+- End with one realistic next action. If rifit_connection is relevant, connect it in one understated sentence; otherwise do not add a generic RIFIT advertisement.
 - Never expose search intent, SEO strategy, brand evaluation, scores, critic feedback, AI, agents, prompts, internal metadata, or the content-generation process.
+
+Preferred flow (adapt it to the BlogIdea rather than copying it mechanically):
+1. A real reader situation or question
+2. A short explanation of why the situation occurs
+3. Contract-specific information or methods
+4. Concrete examples and practical tips
+5. A small next action and a natural, topic-relevant CTA
+
+Avoid this style:
+- "옷장 정리는 중요한 과정입니다."
+- "새로운 가치를 발견하고 특별한 스타일을 완성해보세요."
+- Repeating the same pattern of "~하는 것이 중요합니다" or "~할 수 있습니다" in every paragraph.
 
 Return only a BlogPost object compatible with the requested schema:
 - title

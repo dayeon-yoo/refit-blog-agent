@@ -73,8 +73,8 @@ class WriterAgent:
         if not content:
             raise ValueError("Writer output contains empty content")
 
-        lowered = content.lower()
-        leaked = [phrase for phrase in cls._FORBIDDEN if phrase in lowered]
+        output_text = " ".join((post.content, post.summary, post.cta)).lower()
+        leaked = [phrase for phrase in cls._FORBIDDEN if phrase in output_text]
         if leaked:
             raise ValueError(f"Writer output exposes internal metadata: {leaked[0]}")
 
