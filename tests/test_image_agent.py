@@ -119,3 +119,17 @@ def test_repeated_detail_images_have_distinct_visual_purposes_and_prompts():
     assert len({image.alt_text for image in detail_images}) == 2
     assert "얼룩" in detail_images[0].prompt
     assert "봉제" in detail_images[1].prompt
+
+
+def test_section_placements_use_heading_numbers_without_intro_offset():
+    post = make_post(
+        """도입 문단입니다.\n\n### 1. 옷 분류\n자주 입는 옷과 보관할 옷을 나눕니다.\n\n### 2. 상태 확인\n얼룩과 늘어남을 가까이 살펴봅니다.\n\n### 3. 재사용\n안 입는 셔츠를 새 소품으로 활용합니다.\n\n### 4. 코디\n셔츠와 니트를 조합해 입습니다.\n\n### 5. 정리\n옷장에 계절 옷을 수납합니다."""
+    )
+
+    images = ImageAgent().plan(post).image_plan.images
+    placements = [image.placement for image in images]
+
+    assert placements == ["section-1", "section-2", "section-3", "section-4", "section-5"]
+    assert all("본문 section" not in image.prompt for image in images)
+    assert all("정보를 시각적으로 보완" not in image.prompt for image in images)
+    assert all("의류과" not in image.prompt for image in images)

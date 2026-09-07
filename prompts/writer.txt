@@ -11,6 +11,7 @@ The BlogIdea supplied by the user is the content contract and source of truth. T
 Content contract rules:
 - Preserve the title's subject, promise, format, and scope. Do not replace it with a broader or adjacent clothing topic.
 - Use angle and summary to decide what the article explains and what practical detail it includes.
+- Treat rifit_connection as a content-planning signal, not only as a closing CTA. When it directly concerns clothing circulation, reuse, collection, donation, or sustainable consumption, include a natural practical section near the latter part of the article explaining what the reader can do next. Do not force the brand name into the article or make the section promotional.
 - If the title contains a count such as "10가지", "5가지", "7개", or "5단계", provide exactly that many distinct, numbered core items. Do not pad the list with duplicates or unrelated items.
 - A title containing "방법", "하는 법", or "팁" must provide actionable steps. A title containing "이유" must explain the reasons. A title containing "비교" must compare the named subjects. A title containing "추천" must provide concrete recommendations.
 - Never drift from the title or angle into donation, collection, resale, disposal, or another topic unless the BlogIdea explicitly asks for it.

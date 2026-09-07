@@ -365,3 +365,31 @@ def test_keyword_metrics_model_and_provider_contract_are_provider_neutral():
     assert provider.requested_keywords
     assert all(isinstance(keyword, str) for keyword in provider.requested_keywords)
     assert all(item.search_volume is not None for item in result.tags if item.tag == "가을옷장정리")
+
+
+def test_sustainable_consumption_tags_follow_post_topic_not_incidental_clothing_terms():
+    post = make_post(
+        "지속 가능한 의류 소비를 위한 실용적인 체크리스트",
+        "지속 가능한 소비 습관",
+        "구매 전 소재와 사용 계획을 확인하고 충동 구매를 줄이는 방법",
+        """### 1. 필요성 고려하기
+구매 전 실제로 필요한지 확인해 충동 구매를 줄입니다.
+
+### 2. 소재 확인하기
+소재와 재활용 소재를 확인합니다.
+
+### 3. 브랜드 기준 살펴보기
+브랜드의 윤리적 기준을 살펴봅니다.
+
+### 4. 사용 용도 생각하기
+오래 입을 수 있는지와 사용 용도를 생각합니다.
+
+### 5. 구매 후 관리 계획 세우기
+세탁과 보관으로 의류를 오래 관리합니다.""",
+    )
+
+    result = TagAgent(MockKeywordDataProvider()).recommend(post, candidate_target=80, final_k=30)
+    tags = [item.tag for item in result.tags]
+
+    assert any("지속가능한소비" in tag or "소비" in tag for tag in tags)
+    assert not any(tag.startswith("안입는옷") for tag in tags)

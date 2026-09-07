@@ -4,7 +4,7 @@ import re
 
 from agents.writer_agent import WriterAgent
 from llm.client import MockLLMClient
-from models.schemas import BlogIdea, ScoredIdea
+from models.schemas import BlogIdea, BlogPost, ScoredIdea
 
 
 def make_idea(title: str, keyword: str, angle: str, summary: str = "") -> ScoredIdea:
@@ -31,6 +31,19 @@ def numbered_headings(content: str) -> list[tuple[int, str]]:
         (int(number), label.strip())
         for number, label in re.findall(r"^##\s+(\d+)[.)]\s+(.+?)\s*$", content, re.MULTILINE)
     ]
+
+
+def writer_with_response(title: str, content: str, keyword: str) -> WriterAgent:
+    def response_factory(_prompt, _schema, payload):
+        return BlogPost(
+            title=title,
+            keyword=keyword,
+            content=content,
+            summary=payload.get("summary", "") or "주제에 맞는 실천 내용을 정리했습니다.",
+            cta="오늘 한 가지부터 적용해 보세요.",
+        )
+
+    return WriterAgent(MockLLMClient(response_factory=response_factory))
 
 
 def test_writer_generates_long_structured_post_and_calls_client():
@@ -162,3 +175,117 @@ def test_writer_does_not_use_fixed_template_headings():
 
     for disallowed in ["왜 이 주제가 중요한가요?", "실용 팁", "오늘 바로 해볼 수 있는 행동"]:
         assert disallowed not in post.content
+
+
+def test_exact_title_passes_contract_validation():
+    idea = make_idea("겨울 니트 보관법", "니트 보관", "니트 형태를 지키는 보관 방법")
+    post = WriterAgent(MockLLMClient()).write(idea)
+
+    assert post.title == idea.idea.title
+
+
+def test_natural_title_variation_passes_when_topic_is_preserved():
+    idea = make_idea(
+        "헌옷을 오래 보관하는 방법",
+        "헌옷 보관",
+        "입지 않는 옷을 손상 없이 보관하는 방법",
+    )
+    writer = writer_with_response(
+        "입지 않는 옷을 오래 보관하는 법",
+        "입지 않는 옷을 오래 보관하면서 손상을 줄이는 방법을 설명합니다.",
+        "헌옷 보관",
+    )
+
+    post = writer.write(idea)
+
+    assert post.title != idea.idea.title
+    assert "보관" in post.content
+
+
+def test_unrelated_title_is_rejected():
+    idea = make_idea(
+        "옷장 속 셔츠를 새 소품으로 바꾸는 법",
+        "셔츠 업사이클링",
+        "입지 않는 셔츠를 실용적인 소품으로 바꾸는 과정",
+    )
+    writer = writer_with_response(
+        "헌옷 기부처를 고르는 방법",
+        "헌옷을 기부처에 보내는 절차를 설명합니다.",
+        "셔츠 업사이클링",
+    )
+
+    try:
+        writer.write(idea)
+    except ValueError as error:
+        assert "title" in str(error).lower()
+    else:
+        raise AssertionError("unrelated title should fail contract validation")
+
+
+def test_topic_drift_in_content_is_rejected():
+    idea = make_idea(
+        "옷장 속 셔츠를 새 소품으로 바꾸는 법",
+        "셔츠 업사이클링",
+        "입지 않는 셔츠를 실용적인 소품으로 바꾸는 과정",
+    )
+    writer = writer_with_response(
+        idea.idea.title,
+        "헌옷을 기부처에 보내는 절차와 포장 방법만 설명합니다.",
+        idea.idea.keyword,
+    )
+
+    try:
+        writer.write(idea)
+    except ValueError as error:
+        assert "does not reflect" in str(error)
+    else:
+        raise AssertionError("topic drift should fail contract validation")
+
+
+def test_metadata_in_title_is_rejected():
+    idea = make_idea("옷장 정리 방법", "옷장 정리", "옷장을 정리하는 실천 방법")
+    writer = writer_with_response(
+        "SEO 검색 의도에 맞춘 옷장 정리",
+        "옷장을 정리하는 실제 방법을 설명합니다.",
+        idea.idea.keyword,
+    )
+
+    try:
+        writer.write(idea)
+    except ValueError as error:
+        assert "metadata" in str(error)
+    else:
+        raise AssertionError("metadata in title should fail validation")
+
+
+def test_natural_title_keeps_keyword_and_angle_consistency():
+    idea = make_idea(
+        "가을 옷장 정리로 새로운 스타일 찾기",
+        "가을 옷장 정리",
+        "기존 옷을 다시 조합해 새로운 스타일을 찾는 방법",
+    )
+    writer = writer_with_response(
+        "가을 옷장 속 기존 옷으로 스타일 찾는 방법",
+        "가을 옷장을 정리한 뒤 기존 옷을 다시 조합해 새로운 스타일을 찾는 방법입니다.",
+        idea.idea.keyword,
+    )
+
+    post = writer.write(idea)
+
+    assert "기존 옷" in post.content
+
+
+def test_circulation_connection_becomes_practical_mock_content_without_forced_brand_name():
+    idea = make_idea(
+        "지속 가능한 의류 소비를 위한 실용적인 체크리스트",
+        "지속 가능한 소비 습관",
+        "지속 가능한 의류 구매 및 처분 방법 중심의 실용 가이드",
+        "구매 전 고려할 요소와 충동 구매를 피하는 방법",
+    )
+    idea.idea.rifit_connection = "의류 순환과 지속 가능한 소비에 대한 직접적인 연계성"
+
+    post = WriterAgent(MockLLMClient()).write(idea)
+
+    assert any(term in post.content for term in ("재사용", "재활용", "순환", "기부", "수거"))
+    assert "RIFIT" not in post.content
+    assert "브랜드 평가" not in post.content

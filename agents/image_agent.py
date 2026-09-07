@@ -15,6 +15,7 @@ class ImageAgent:
         "옷", "의류", "옷장", "셔츠", "바지", "니트", "청바지", "가방", "소재",
         "코디", "스타일", "수납", "행거", "서랍",
     )
+    _GARMENT_TERMS = ("셔츠", "바지", "니트", "청바지", "가방", "옷장", "의류", "옷")
     _CTA_MARKERS = ("마무리", "정리해보세요", "시작해보세요", "실천해보세요", "함께해요")
     _ROLE_RULES = (
         ("comparison", "비교 전후의 변화가 한눈에 보이는 장면", ("비교", "전후", "차이", "반면")),
@@ -39,6 +40,7 @@ class ImageAgent:
         sections: list[tuple[str, str, int]] = []
         current_heading = ""
         current_index = 0
+        next_section_number = 0
         buffer: list[str] = []
 
         for line in lines:
@@ -46,7 +48,8 @@ class ImageAgent:
                 if buffer or current_heading:
                     sections.append((current_heading.strip(), "\n".join(buffer).strip(), current_index))
                 current_heading = line.strip().lstrip("# ").strip()
-                current_index = len(sections)
+                next_section_number += 1
+                current_index = next_section_number
                 buffer = []
             else:
                 buffer.append(line)
@@ -123,8 +126,15 @@ class ImageAgent:
 
     def _visual_subject(self, role: str, paragraph: str, heading: str, blog_post: BlogPost) -> str:
         text = f"{heading} {paragraph}".lower()
-        garments = [term for term in self._FASHION_TERMS if term in text]
-        garment_label = "과 ".join(dict.fromkeys(garments[:2])) or "의류"
+        garments = list(dict.fromkeys(term for term in self._GARMENT_TERMS if term in text))
+        if not garments:
+            garment_label = "의류"
+        elif len(garments) == 1:
+            garment_label = garments[0]
+        elif len(garments) == 2:
+            garment_label = f"{garments[0]}와 {garments[1]}"
+        else:
+            garment_label = ", ".join(garments[:3])
         if role == "classification":
             return f"{garment_label}를 두 그룹으로 나눈 정리 장면"
         if role == "comparison":
@@ -175,8 +185,7 @@ class ImageAgent:
         elif role == "organization":
             composition = "수납 전후의 공간감과 손이 닿는 옷 배치가 함께 보이는 wide shot"
 
-        context = heading or blog_post.summary or blog_post.title
-        return f"{subject}, {setting}, {composition}, {style}, 본문 section '{context}'의 정보를 시각적으로 보완하는 장면"
+        return f"{subject}, {setting}, {composition}, {style}"
 
     def _make_alt_text(self, role: str, subject: str) -> str:
         if role == "classification":
@@ -207,7 +216,7 @@ class ImageAgent:
         for rank, info in enumerate(chosen):
             role = info["role"]
             subject = self._visual_subject(role, info["paragraph"], info["heading"], blog_post)
-            placement = "hero-intro" if rank == 0 and info["index"] == 0 else f"section-{info['index'] + 1}"
+            placement = "hero-intro" if rank == 0 and info["index"] == 0 else f"section-{info['index']}"
             images.append(ImagePrompt(
                 placement=placement,
                 purpose=info["purpose"],

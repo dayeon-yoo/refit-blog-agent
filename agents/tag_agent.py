@@ -137,7 +137,8 @@ class TagAgent:
         "코디", "스타일", "스타일링", "활용", "업사이클링", "리폼", "재활용", "재사용",
         "재조합", "조합", "기부", "수거", "판매", "처리", "폐기", "청소", "비우기",
         "안입는옷", "아이템", "방법", "팁", "노하우", "수납", "공간", "분류", "기준",
-        "루틴", "주기",
+        "루틴", "주기", "지속", "가능한", "지속가능", "소비", "구매", "충동구매",
+        "소재", "브랜드", "윤리", "용도", "관리", "착용", "오래", "처분", "순환",
     }
     _METADATA = {
         "seo", "검색의도", "검색 의도", "ai", "agent", "prompt", "workflow",
@@ -280,8 +281,16 @@ class TagAgent:
             (("공간을 활용", "공간 활용"), "공간활용"),
         )
         for markers, concept in phrase_rules:
-            if any(marker in text for marker in markers) and concept not in concepts:
-                concepts.append(concept)
+            if not any(marker in text for marker in markers) or concept in concepts:
+                continue
+            # A single incidental mention should not create a large family of
+            # 안입는옷 tags when the article is actually about another topic.
+            if concept == "안입는옷":
+                marker_count = sum(text.count(marker) for marker in markers)
+                priority_text = self._topic_text(post)
+                if marker_count < 2 and not any(marker in priority_text for marker in markers):
+                    continue
+            concepts.append(concept)
         return concepts
 
     def _content_terms(self, post: BlogPost) -> List[str]:
@@ -291,6 +300,8 @@ class TagAgent:
             "옷", "옷장", "의류", "헌옷", "정리", "보관", "코디", "스타일", "스타일링",
             "활용", "업사이클링", "재활용", "재사용", "기부", "수거", "판매", "처리",
             "계절", "가을", "겨울", "봄", "여름", "시즌", "가방", "셔츠", "니트",
+            "지속", "가능한", "소비", "구매", "소재", "브랜드", "용도", "관리", "착용",
+            "오래", "처분", "순환", "충동구매",
         }
         body_terms: List[str] = []
         for raw in self._TOKEN.findall((post.content or "").lower()):

@@ -56,6 +56,11 @@ class MockLLMClient(LLMClient):
         rifit_connection = str(payload.get("rifit_connection", "")).strip()
 
         intro = angle or summary or keyword or title
+        connection_text = rifit_connection.lower()
+        circulation_connection = any(
+            marker in connection_text
+            for marker in ("순환", "재사용", "재활용", "수거", "기부", "처분", "처리", "지속 가능한")
+        )
         sections = [
             f"## {title}",
             f"{title}을 고민하다 보면, 막상 어디서부터 시작해야 할지 망설여질 때가 있는데요."
@@ -79,9 +84,16 @@ class MockLLMClient(LLMClient):
                     f"{intro}를 살펴볼 때는 한 번에 모두 바꾸려 하지 말고, {index}번째로 눈에 들어오는 부분부터 확인해 보세요."
                     " 준비물과 현재 상태를 먼저 점검하면 시행착오를 줄일 수 있습니다.",
                 ])
+        if circulation_connection:
+            sections.extend([
+                "## 더 이상 입지 않는 옷은 어떻게 순환시킬까요?",
+                "더 이상 손이 가지 않는 옷은 바로 버리기보다 상태와 사용 가능성을 먼저 살펴보세요. "
+                "다시 입거나 수선할 수 있는 옷은 활용하고, 계속 보관할 이유가 없다면 기부·수거·재활용처럼 "
+                "상태에 맞는 순환 방법을 정해 옷의 다음 쓰임으로 연결해보는 것이 좋습니다.",
+            ])
         cta = "오늘은 가장 부담 없는 항목 하나만 골라 실제로 해보세요."
-        if rifit_connection:
-            cta = f"{rifit_connection}이 필요한 순간이라면, 오늘 정리한 기준을 먼저 적용해 보세요."
+        if circulation_connection:
+            cta = "입지 않는 옷이 생겼다면 상태를 확인한 뒤 재사용이나 순환 방법을 한 가지 정해보세요."
         sections.append(cta)
         return {
             "title": title,
