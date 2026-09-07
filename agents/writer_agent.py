@@ -17,51 +17,76 @@ class WriterAgent:
         title = idea.idea.title
         keyword = idea.idea.keyword
 
-        if "반팔" in title or "반팔" in keyword:
-            title_block = "## 반팔이 늘어나는 시기, 무엇을 보관하고 무엇을 정리할까요?"
-            intro = "여름이 끝나면 반팔이 한 번에 늘어나는 느낌이 들죠. 어느 순간부터 '입는 옷'과 '안 입는 옷'의 경계가 모호해지면서, 정리할 타이밍이 필요해집니다."
-            body1 = "처음부터 모두 버리는 건 오히려 번거로울 수 있어요. 보통은 상태가 좋고 자주 입는 옷을 따로 두고, 잘 입지 않는 옷은 다시 쓰는 방식으로 정리하는 편이 훨씬 현실적이죠."
-            body2 = "반팔을 정리할 때는 세 가지 기준만 기억하면 됩니다. 먼저, 이번 시즌에도 자주 입을 가능성이 있는 옷인지 살펴보고, 상태는 좋은데 입는 빈도가 낮은 옷은 재사용이나 기부를 고려해보세요. 마지막으로, 세탁 후에도 손상이 느껴지거나 오래 입기 어려운 옷은 재활용 쪽으로 넘기는 방식이 가장 무난합니다."
-            body3 = "특히 계절이 바뀌는 시점에는 오래 입지 않은 옷을 보관할지, 다시 꺼낼지 고민이 많아지는데요. 이럴 때는 보관 기간을 정해두는 게 도움이 됩니다. 한 시즌 이상 입지 않은 옷은 다시 입을 가능성을 다시 점검해보고, 필요 없으면 다른 선택지를 찾는 편이 더 깔끔하죠."
-            body4 = "의류를 정리할 때는 '버리기'보다 '다음에 어떻게 쓸 수 있을지'를 먼저 떠올리는 게 중요해요. 반팔 한두 장이 사소해 보이지만, 이렇게 기준을 정해두면 매번 옷장 정리할 때 훨씬 덜 스트레스받습니다."
-            close = "다음 번 옷장 정리를 할 때는 지금 입지 않는 반팔을 한 번씩 정리해보고, 보관과 순환의 기준을 다시 세워보세요. 작게 시작해도 의류를 더 가볍게 관리하는 데는 충분히 효과가 있습니다."
-        elif "보관" in title or "보관" in keyword:
-            title_block = "## 계절 옷 보관, 이렇게 확인하면 훨씬 편해요"
-            intro = "겨울 옷을 보관하기 전에는 단순히 넣어두는 것보다 상태를 먼저 점검하는 게 중요해요. 보관을 제대로 하지 않으면 다음 시즌에 냄새나 변형이 생길 수 있거든요."
-            body1 = "보관 전에는 세탁 상태와 건조 상태를 먼저 확인해보세요. 충분히 건조되지 않은 옷은 보관하는 순간 곰팡이나 냄새의 원인이 되기 쉽습니다."
-            body2 = "그다음에는 몇 시즌 동안 입을 가능성이 있는지 다시 살펴보는 게 좋습니다. 자주 입는 옷은 보관 위치를 분리해두고, 입지 않는 옷은 기부나 재판매 같은 옵션을 함께 생각해보면 훨씬 정리하기 쉬워요."
-            body3 = "가장 흔한 실수는 '나중에 입겠지'라는 생각으로 옷을 그냥 쌓아두는 거예요. 보관은 공간을 늘리는 일이라기보다, 다음 시즌을 위해 의류를 잘 유지하는 과정이라고 생각하면 훨씬 낫습니다."
-            body4 = "계절이 바뀔 때마다 옷장을 한 번씩 정리하는 습관을 들이면, 보관할 옷과 정리할 옷이 더 명확해집니다. 작은 점검이 반복될수록 다음 시즌에도 옷 관리가 훨씬 수월해지죠."
-            close = "다음 계절을 앞두고 옷장을 열어보면, 보관할 옷과 정리할 옷이 한눈에 보이기 시작합니다. 지금 바로 한 번 점검해보세요."
-        elif "정리" in title or "정리" in keyword:
-            title_block = "## 옷장 정리, 어디서부터 시작해야 할까요?"
-            intro = "계절이 바뀌는 시점에는 옷장 정리가 단순히 공간을 정리하는 일이 아니라, 다음 시즌을 준비하는 과정이 되는데요. 이때 가장 먼저 필요한 건 무작정 버리는 것이 아니라 기준을 세우는 것입니다."
-            body1 = "보통은 자주 입는 옷, 가끔 입는 옷, 거의 입지 않는 옷을 구분하는 방식이 가장 실용적이에요. 자주 입는 옷은 보관 공간을 넉넉히 두고, 거의 입지 않는 옷은 다시 사용할 수 있는지 살펴보는 편이 좋습니다."
-            body2 = "상태가 좋고 아직 괜찮은 옷은 기부나 중고 거래처럼 다시 활용할 수 있는 경로를 생각해보세요. 반대로 손상되거나 오래 입을 수 없는 옷은 재활용을 고려하는 편이 더 낫습니다."
-            body3 = "의류 정리는 한 번에 끝나지 않아요. 시즌마다 조금씩 기준을 다듬다 보면, 어떤 옷이 나에게 정말 필요한지 점점 더 잘 보이기 시작합니다."
-            body4 = "그리고 가장 중요한 건 완벽하게 정리하는 게 아니라, 다음에는 더 쉽게 관리하는 방법을 찾는 거예요. 정리된 옷장은 그 자체로 생활의 여유를 만들어주죠."
-            close = "다음 시즌을 앞두고 옷장을 열어보면, 정리할 물건과 보관할 물건이 분명히 보이기 시작합니다. 그 순간부터 의류 관리가 훨씬 가볍게 느껴져요."
-        else:
-            title_block = f"## {title}"
-            intro = "의류를 관리하는 건 단순히 옷을 줄이는 일이 아니라, 생활의 흐름을 정리하는 과정이기도 해요. 특히 계절이 바뀌는 시기에는 어떤 옷을 계속 보관할지 결정하는 게 생각보다 중요합니다."
-            body1 = "가장 현실적인 기준은 상태, 입는 빈도, 시즌 적합성입니다. 지금 당장 입지 않더라도 상태가 좋은 옷은 다시 활용할 수 있는 경로를 찾고, 자주 입지 않는 옷은 보관 범위를 줄이는 편이 더 효율적이죠."
-            body2 = "정리할 때는 '무조건 버린다'보다 '다음에 어떤 방식으로 사용할지'를 떠올리는 게 좋습니다. 보관이 필요한 옷, 기부나 재판매가 가능한 옷, 재활용이 필요한 옷을 구분해두면 한 번 정리해도 훨씬 오래 유지됩니다."
-            body3 = "의류를 관리하는 좋은 습관은 크게 어렵지 않습니다. 계절이 바뀔 때마다 한 번씩 옷장을 정리하고, 실제로 입는 옷과 아닌 옷을 구분해보면 됩니다."
-            body4 = "이런 작은 점검이 반복되면 옷장이 더 넓어지는 것 같으면서도, 오히려 필요한 옷만 남게 되죠."
-            close = "다음 시즌이 오기 전에 옷을 한 번 다시 살펴보는 것만으로도 의류 관리가 훨씬 가볍게 바뀔 수 있습니다."
+        # Use brand/critic context internally to guide tone, but never expose it.
+        brand_eval = getattr(idea, "brand_evaluation", None)
+        critic_reason = getattr(idea, "reason", None)
 
-        content = (
-            f"{title_block}\n\n"
-            f"{intro}\n\n"
-            f"{body1}\n\n"
-            f"{body2}\n\n"
-            f"{body3}\n\n"
-            f"{body4}\n\n"
-            f"{close}"
+        # Choose an article structure based on angle/keyword hints
+        angle = idea.idea.angle or "정보형"
+        lower = lambda s: (s or "").lower()
+
+        sections: list[str] = []
+
+        def add_heading(h: str):
+            sections.append(f"## {h}\n")
+
+        def add_paragraph(p: str):
+            sections.append(f"{p}\n")
+
+        # Intro
+        intro_line = (
+            f"{title}에 대해 고민하고 계신가요? "
+            "일상에서 바로 적용할 수 있는 실용적 기준과 행동을 중심으로 정리해드릴게요."
         )
-        summary = (
-            f"{title}는 {keyword}와 연결되는 실생활 고민을 바탕으로, 시즌이 바뀔 때마다 의류를 정리하고 다시 활용하는 기준을 자연스럽게 정리한 글입니다. "
-            "무작정 버리기보다 보관, 재사용, 기부, 재활용을 함께 고려하는 방식으로 접근하며, 독자가 다음 옷장 정리를 실제로 실천할 수 있도록 돕습니다."
-        )
-        cta = "다음 시즌이 오기 전에 옷장을 한 번 열어보고, 다시 입지 않는 옷을 어떤 방식으로 관리할지 정리해보세요."
+        add_heading(title)
+        add_paragraph(intro_line)
+
+        # Decide structure type
+        if any(k in lower(angle) for k in ["체크", "체크리스트", "체크할", "전 체크", "체크리스트"] ) or any(x in lower(keyword) for x in ["체크", "팁", "방법"]):
+            # checklist style
+            add_heading("어떤 기준으로 판단할까요?")
+            add_paragraph("다음 3가지를 기준으로 빠르게 판단해 보세요:")
+            add_paragraph("1. 상태: 얼룩/늘어남/변형이 있는지 확인하세요.")
+            add_paragraph("2. 사용 빈도: 지난 시즌 포함 최근 1년간 착용 횟수를 기준으로 생각하세요.")
+            add_paragraph("3. 활용성: 다른 코디와의 조합 여부를 고려하세요.")
+            add_heading("실제 적용 예")
+            add_paragraph("예: 셔츠 하나는 상태가 좋아도 요즘 스타일과 맞지 않다면 기부나 리셀을 고려해보세요.")
+        elif any(x in lower(angle) for x in ["수선", "리폼", "업사이클"] ) or any(x in lower(keyword) for x in ["수선", "리폼", "업사이클"]):
+            # how-to style
+            add_heading("간단한 수선·리폼으로 오래 입는 법")
+            add_paragraph("집에서 시도해볼 수 있는 기본 수선과 리폼 방법을 단계별로 안내합니다.")
+            add_paragraph("1. 늘어난 니트는 뜨개질 바늘과 바늘땀으로 고정해 보세요.")
+            add_paragraph("2. 소매나 밑단 수선은 가까운 수선집을 이용하면 비용 대비 효과가 큽니다.")
+            add_paragraph("3. 간단한 패치나 자수로 빈티지 무드를 내는 방법도 추천합니다.")
+        elif any(x in lower(angle) for x in ["리셀", "중고", "판매"] ) or any(x in lower(keyword) for x in ["리셀", "중고", "판매"]):
+            # resale guide
+            add_heading("중고 판매 전 체크포인트")
+            add_paragraph("중고로 내놓기 전, 사진과 상태 표기는 구매 결정에 큰 영향을 줍니다.")
+            add_paragraph("1. 깨끗한 사진: 자연광에서 여러 각도로 촬영하세요.")
+            add_paragraph("2. 상세 설명: 소재, 사이즈, 상태(특이점)를 솔직하게 적으세요.")
+            add_paragraph("3. 적정 가격: 유사 매물 가격을 참고해 합리적으로 책정하세요.")
+        else:
+            # general informative / narrative
+            add_heading("왜 이 주제가 중요한가요?")
+            add_paragraph("계절이 바뀔 때마다 옷장을 정리하면 생활이 더 가벼워지고, 필요한 옷만 남길 수 있습니다.")
+            add_heading("실용 팁")
+            add_paragraph("간단한 분류 기준과 보관 요령을 적용하면 다음 시즌까지 옷 상태를 잘 유지할 수 있어요.")
+
+        # Add a short practical checklist or next steps
+        add_heading("오늘 바로 해볼 수 있는 행동")
+        add_paragraph("1) 옷장 한 칸을 정리해 보며 상태와 활용도를 체크해보세요.")
+        add_paragraph("2) 기부나 리셀용으로 분류한 옷은 오늘 바로 사진을 찍어 목록을 만드세요.")
+
+        # Closing
+        closing = "작은 실천이 모이면 옷 관리가 훨씬 수월해집니다. 다음 계절에 더 가볍게 시작해보세요."
+        add_paragraph(closing)
+
+        content = "\n\n".join(sections)
+
+        # summary: concise human-readable summary without internal metadata
+        summary = f"{title}은(는) 실생활에서 바로 적용할 수 있는 실용적인 기준과 행동을 제안합니다. 상태·빈도·활용성 중심으로 판단해 보관, 재사용, 기부, 재활용을 고려하세요."
+
+        # CTA: contextual and not a hard sales pitch
+        cta = "지금 옷장에 있는 한 벌을 골라 상태와 활용도를 점검해보세요. 필요하면 기부나 리셀을 고려해 보관 공간을 줄여보세요."
+
         return BlogPost(title=title, keyword=keyword, content=content, summary=summary, cta=cta)

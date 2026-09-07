@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from llm.client import LLMClient, get_llm_client
+from config.settings import get_settings
 from models.schemas import BlogIdea
 
 
@@ -43,68 +44,115 @@ class IdeaGenerator:
 
     def generate(self, trend_results, seo_results, brand_context=None) -> List[BlogIdea]:
         prompt = self.prompt
+        settings = get_settings()
+        idea_count = max(1, settings.idea_count)
 
         if not trend_results and not seo_results:
-            return self.client.generate_many(prompt, BlogIdea, self._fallback_candidates())
+            # return fallback candidates sized to idea_count
+            base = self._fallback_candidates()
+            candidates = (base * ((idea_count // len(base)) + 1))[:idea_count]
+            return self.client.generate_many(prompt, BlogIdea, candidates)
 
-        trend_topics = [trend.topic for trend in (trend_results or [])]
-        seo_keywords = [seo.keyword for seo in (seo_results or [])]
-        generated = []
-        title_templates = [
-            "{topic} 어떻게 처리할까?",
-            "{topic}, 이럴 때는 의류 순환이 더 낫다",
-            "{topic} 전 체크할 것",
-            "{topic}과 헌옷 수거, 어떤 흐름이 맞을까?",
-            "{topic}로 정리하는 현실적인 방법",
+        # build a seed pool from trends and seo keywords (preserve order, unique)
+        seeds = []
+        if trend_results:
+            for t in trend_results:
+                if t.topic not in seeds:
+                    seeds.append(t.topic)
+        if seo_results:
+            for s in seo_results:
+                if s.keyword not in seeds:
+                    seeds.append(s.keyword)
+
+        # editorial perspectives to diversify idea types
+        perspectives = [
+            ("wardrobe", "실용적인 옷장 정리/관리와 적용 방법"),
+            ("reuse", "헌옷 처리와 재사용 경로 안내"),
+            ("recycle", "의류 수거와 재활용/업사이클링 소개"),
+            ("resale", "중고 거래/세컨핸드 판매 전략"),
+            ("vintage", "빈티지 스타일과 리폼 아이디어"),
+            ("repair", "수선/리폼/업사이클링 실전 가이드"),
+            ("habit", "지속 가능한 소비 습관과 의류 소비의 대안"),
+            ("care", "실용적인 의류 관리와 세탁/보관 팁"),
         ]
 
-        for idx, trend in enumerate((trend_results or [])[:5]):
-            keyword = seo_keywords[idx] if idx < len(seo_keywords) else trend.topic
-            title = title_templates[idx % len(title_templates)].format(topic=trend.topic)
-            generated.append(
+        # title templates per perspective
+        templates = {
+            "wardrobe": ["{seed}로 옷장 정리할 때 꼭 확인할 5가지", "{seed}을(를) 바로 정리하는 현실적 가이드"],
+            "reuse": ["{seed}을(를) 기부하거나 재사용할 때 체크리스트", "{seed} 재사용 전 꼭 확인할 점"],
+            "recycle": ["{seed}을(를) 재활용/업사이클링으로 연결하는 방법", "{seed} 재활용 아이디어: 이렇게 활용하세요"],
+            "resale": ["{seed} 판매 전 알아둘 리셀 팁", "{seed}을(를) 중고로 높은 가격에 파는 법"],
+            "vintage": ["{seed}에서 찾은 빈티지 스타일 적용법", "{seed} 리폼으로 빈티지 무드 만들기"],
+            "repair": ["{seed} 수선으로 오래 입는 법", "{seed}을(를) 집에서 손쉽게 수선하는 방법"],
+            "habit": ["{seed}으로 시작하는 지속 가능한 옷 소비 습관", "{seed}을 통해 소비를 줄이는 실천법"],
+            "care": ["{seed} 소재별 세탁·건조 체크리스트", "{seed} 보관 전 꼭 확인할 사항"],
+        }
+
+        candidates = []
+        seen_titles = set()
+
+        # interleave seeds with perspectives to produce diverse candidates
+        p_count = len(perspectives)
+        p_index = 0
+        s_index = 0
+        while len(candidates) < idea_count and (s_index < len(seeds)):
+            seed = seeds[s_index]
+            perspective_key, perspective_desc = perspectives[p_index % p_count]
+            tmpl = templates[perspective_key][(s_index + p_index) % len(templates[perspective_key])]
+            title = tmpl.format(seed=seed)
+            if title in seen_titles:
+                # try alternate template or skip
+                alt = templates[perspective_key][0].format(seed=seed)
+                title = alt
+            seen_titles.add(title)
+
+            # pick keyword and seasonality from matching seo or trend
+            keyword = seed
+            search_intent = "정보 탐색"
+            seasonality = 0.5
+            if seo_results:
+                for s in seo_results:
+                    if s.keyword == seed:
+                        keyword = s.keyword
+                        search_intent = s.search_intent
+                        seasonality = round(min(max(s.seasonality, 0.0), 1.0), 2)
+                        break
+            if trend_results and seasonality == 0.5:
+                for t in trend_results:
+                    if t.topic == seed:
+                        seasonality = round(min(max(t.relevance_score, 0.0), 1.0), 2)
+                        break
+
+            candidates.append(
                 {
                     "title": title,
                     "keyword": keyword,
-                    "search_intent": seo_results[idx].search_intent if seo_results and idx < len(seo_results) else "정보 탐색",
-                    "angle": f"{trend.topic}에 대한 현실적인 문제 해결과 의류 순환 관점의 정리",
-                    "rifit_connection": "헌옷 수거, 의류 재사용, 재활용과 연결되는 실용적 콘텐츠",
-                    "seasonality": round(min(max(trend.relevance_score, 0.5), 0.99), 2),
+                    "search_intent": search_intent,
+                    "angle": perspective_desc,
+                    "rifit_connection": "의류 순환/수거/재사용과 연결되는 실용적 콘텐츠",
+                    "seasonality": seasonality,
                 }
             )
 
-        for idx, seo in enumerate((seo_results or [])[:5]):
-            if len(generated) >= 10:
-                break
-            generated.append(
-                {
-                    "title": f"{seo.keyword}, 리핏 관점에서 정리해보면?",
-                    "keyword": seo.keyword,
-                    "search_intent": seo.search_intent,
-                    "angle": f"{seo.keyword}에 대한 실제 사용자 고민을 해결하는 정보형 콘텐츠",
-                    "rifit_connection": "의류 순환과 지속가능한 패션 관점으로 연결",
-                    "seasonality": round(min(max(seo.seasonality, 0.5), 0.99), 2),
-                }
-            )
+            # advance perspective and seed indexes
+            p_index += 1
+            if p_index % p_count == 0:
+                s_index += 1
 
-        unique_candidates = []
-        seen = set()
-        for item in generated:
-            key = item["title"]
-            if key in seen:
-                continue
-            seen.add(key)
-            unique_candidates.append(item)
-
-        while len(unique_candidates) < 10:
-            unique_candidates.append(
-                {
-                    "title": f"의류 정리와 순환, {len(unique_candidates) + 1}가지 현실 팁",
+        # if still short, fill with sensible variants
+        i = 1
+        while len(candidates) < idea_count:
+            title = f"의류 재사용과 순환: 실용 팁 {i}"
+            if title not in seen_titles:
+                candidates.append({
+                    "title": title,
                     "keyword": "의류 순환 방법",
                     "search_intent": "정보 탐색",
-                    "angle": "생활 속 정리 습관과 의류 순환을 연결하는 실용 지침",
+                    "angle": "생활 속에서 바로 적용 가능한 의류 재사용 실전 팁",
                     "rifit_connection": "의류 정리와 수거의 자연스러운 연결",
-                    "seasonality": 0.85,
-                }
-            )
+                    "seasonality": 0.5,
+                })
+                seen_titles.add(title)
+            i += 1
 
-        return self.client.generate_many(prompt, BlogIdea, unique_candidates[:10])
+        return self.client.generate_many(prompt, BlogIdea, candidates[:idea_count])

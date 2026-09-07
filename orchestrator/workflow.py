@@ -9,6 +9,7 @@ from agents.trend_agent import TrendAgent
 from agents.writer_agent import WriterAgent
 from config.settings import get_settings
 from models.schemas import WorkflowResult
+from orchestrator.dedupe import filter_duplicates
 
 
 def run_workflow() -> WorkflowResult:
@@ -27,6 +28,13 @@ def run_workflow() -> WorkflowResult:
     idea_candidates = IdeaGenerator().generate(trend_results, seo_results)[:idea_limit]
     if not idea_candidates:
         idea_candidates = IdeaGenerator().generate(trend_results, seo_results)[:idea_limit]
+
+    # Duplicate Check: filter out ideas that are substantively similar to past outputs
+    deduped_candidates = filter_duplicates(idea_candidates)
+    # If all ideas removed by dedupe, fall back to original candidates to avoid empty pipeline
+    if not deduped_candidates:
+        deduped_candidates = idea_candidates[: max(1, min(top_k, len(idea_candidates)))]
+    idea_candidates = deduped_candidates
 
     brand_evaluations = BrandAgent().run(idea_candidates)
     if not brand_evaluations:
