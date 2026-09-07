@@ -413,6 +413,13 @@ class TagAgent:
                 return intent
         return "핵심"
 
+    def _variant_family(self, tag: str) -> str:
+        """Group near-identical prefix/suffix expansions without changing ranking."""
+        for family in ("공간활용", "안입는옷", "재사용", "재활용", "수납", "보관", "기준", "루틴", "활용"):
+            if family in tag:
+                return family
+        return "핵심"
+
     def _context_adjustment(self, tag: str, post: BlogPost) -> float:
         adjustment = 0.0
         primary = self._primary_season(post)
@@ -445,11 +452,21 @@ class TagAgent:
             grouped.setdefault(root(candidate), []).append(candidate)
 
         selected: List[str] = []
+        family_counts: Dict[str, int] = {}
+        root_counts: Dict[str, int] = {}
         # Keep at most three variants per root in the final candidate pool.
         for group in grouped.values():
-            for candidate in group[:3]:
+            for candidate in group:
+                candidate_root = root(candidate)
+                if root_counts.get(candidate_root, 0) >= 3:
+                    continue
+                family = self._variant_family(candidate)
+                if family != "핵심" and family_counts.get(family, 0) >= 2:
+                    continue
                 if candidate not in selected:
                     selected.append(candidate)
+                    root_counts[candidate_root] = root_counts.get(candidate_root, 0) + 1
+                    family_counts[family] = family_counts.get(family, 0) + 1
                 if len(selected) >= limit:
                     return selected
         return selected
@@ -654,6 +671,7 @@ class TagAgent:
         seen: set[str] = set()
         root_counts: Dict[str, int] = {}
         group_counts: Dict[str, int] = {}
+        family_counts: Dict[str, int] = {}
         remaining = list(scored)
         while remaining:
             recommendation = max(
@@ -678,11 +696,15 @@ class TagAgent:
                         break
             if root_counts.get(root, 0) >= 3:
                 continue
+            family = self._variant_family(recommendation.tag)
+            if family != "핵심" and family_counts.get(family, 0) >= 2:
+                continue
             group = self._semantic_group(recommendation.tag)
             if group_counts.get(group, 0) >= 8:
                 continue
             seen.add(recommendation.tag)
             root_counts[root] = root_counts.get(root, 0) + 1
+            family_counts[family] = family_counts.get(family, 0) + 1
             group_counts[group] = group_counts.get(group, 0) + 1
             recommendation.ranking_score = round(
                 max(

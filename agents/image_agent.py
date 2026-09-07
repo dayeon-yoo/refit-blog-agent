@@ -64,6 +64,29 @@ class ImageAgent:
 
     def _classify(self, heading: str, paragraph: str, index: int, total: int) -> tuple[str, str, float]:
         text = f"{heading} {paragraph}".lower()
+        heading_text = heading.lower()
+        heading_priority = (
+            ("organization", "옷장 공간과 수납을 활용하는 장면", ("공간 활용", "공간", "옷걸이", "수납함", "선반", "바구니")),
+            ("reuse", "기부하거나 다시 사용할 의류를 준비하는 장면", ("기부", "재사용", "재활용", "리폼", "새활용")),
+            ("detail", "얼룩과 손상, 소재 상태를 가까이 확인하는 장면", ("상태", "얼룩", "손상", "소재", "봉제", "마모")),
+        )
+        for role, purpose, markers in heading_priority:
+            if any(marker in heading_text for marker in markers):
+                if role == "detail" and self._contains(heading_text, ("소재", "봉제", "라벨", "단추", "지퍼")):
+                    purpose = "소재와 봉제선, 라벨 같은 의류 구조를 가까이 확인하는 장면"
+                elif role == "detail" and self._contains(heading_text, ("얼룩", "손상", "늘어남", "마모")):
+                    purpose = "얼룩과 늘어남, 마모 같은 의류 상태를 가까이 확인하는 장면"
+                return role, purpose, 9.0
+
+        body_priority = (
+            ("organization", "옷장 공간과 수납을 활용하는 장면", ("공간 활용", "옷걸이", "수납함", "선반", "바구니")),
+            ("reuse", "기부하거나 다시 사용할 의류를 준비하는 장면", ("기부", "수거", "전달", "재사용", "재활용", "리폼", "새활용")),
+            ("detail", "얼룩과 손상, 소재 상태를 가까이 확인하는 장면", ("얼룩", "손상", "소재", "봉제", "마모")),
+        )
+        for role, purpose, markers in body_priority:
+            if any(marker in text for marker in markers):
+                return role, purpose, 8.0
+
         for role, purpose, markers in self._ROLE_RULES:
             matched = self._contains(text, markers)
             if role == "classification" and "분류" in heading.lower():
@@ -126,7 +149,12 @@ class ImageAgent:
 
     def _visual_subject(self, role: str, paragraph: str, heading: str, blog_post: BlogPost) -> str:
         text = f"{heading} {paragraph}".lower()
-        garments = list(dict.fromkeys(term for term in self._GARMENT_TERMS if term in text))
+        garments = []
+        for term in sorted(self._GARMENT_TERMS, key=len, reverse=True):
+            if term in text and not any(term in selected for selected in garments):
+                garments.append(term)
+            if len(garments) >= 2:
+                break
         if not garments:
             garment_label = "의류"
         elif len(garments) == 1:
@@ -148,6 +176,8 @@ class ImageAgent:
                 return f"{heading}에서 확인하는 {garment_label}의 구체적인 디테일"
             return f"{garment_label}의 소재와 착용 상태 디테일"
         if role == "reuse":
+            if self._contains(text, ("기부", "수거", "전달")):
+                return "기부할 의류를 상태별로 분류해 상자에 담는 준비 과정"
             return f"기존 {garment_label}를 새로운 용도로 활용하는 작업"
         if role == "styling":
             return f"기존 {garment_label}를 조합한 일상 코디"
@@ -156,6 +186,8 @@ class ImageAgent:
         if role == "process":
             return f"{garment_label}를 실제로 정리하고 다루는 과정"
         if role == "organization":
+            if self._contains(text, ("공간", "옷걸이", "수납함", "선반", "바구니")):
+                return "옷장 안 옷걸이와 수납함을 활용해 의류를 배치하는 장면"
             return "가정용 옷장과 수납된 계절 의류"
         return blog_post.title or blog_post.summary or "일상 속 의류 관리"
 
@@ -175,8 +207,12 @@ class ImageAgent:
             else:
                 composition = "옷감의 결, 봉제선, 라벨 같은 구조가 보이는 소재 close-up"
         elif role == "reuse":
-            setting = "작업 테이블과 옷장이 있는 생활 공간"
-            composition = "기존 의류와 새 활용 결과물이 함께 보이는 과정 중심 구도"
+            if "기부할" in subject:
+                setting = "밝은 현관 또는 정리 테이블이 있는 생활 공간"
+                composition = "상태별로 분류한 옷을 상자에 접어 담고 전달 준비를 하는 손이 보이는 구도"
+            else:
+                setting = "작업 테이블과 옷장이 있는 생활 공간"
+                composition = "기존 의류와 새 활용 결과물이 함께 보이는 과정 중심 구도"
         elif role == "styling":
             setting = "자연광이 들어오는 집 안 또는 현실적인 외출 준비 공간"
             composition = "옷의 조합과 착용 모습을 보여주는 반신 또는 전신 구도"
