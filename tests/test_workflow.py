@@ -5,34 +5,37 @@ from agents.image_agent import ImageAgent
 from agents.seo_agent import SEOAgent
 from agents.trend_agent import TrendAgent
 from agents.writer_agent import WriterAgent
+from config.settings import get_settings
 from orchestrator.workflow import run_workflow
 
 
 def test_workflow_result_can_be_serialized_to_json():
+    settings = get_settings()
     result = run_workflow()
     payload = result.model_dump(mode="json")
     assert isinstance(payload, dict)
-    assert len(payload["ideas"]) >= 10
-    assert len(payload["top_3"]) == 3
-    assert len(payload["blog_posts"]) == 3
+    assert len(payload["ideas"]) == settings.idea_count
+    assert len(payload["top_3"]) == settings.top_k
+    assert len(payload["blog_posts"]) == settings.top_k
     assert result.to_json()
 
 
 def test_mock_workflow_data_flow_is_connected():
+    settings = get_settings()
     trend_results = TrendAgent().run()
     seo_results = SEOAgent().run(trend_results)
-    ideas = IdeaGenerator().generate(trend_results, seo_results)
+    ideas = IdeaGenerator().generate(trend_results, seo_results)[: settings.idea_count]
     brand_evaluations = BrandAgent().run(ideas)
-    top_3 = CriticAgent().top_3(ideas, brand_evaluations)
+    top_3 = CriticAgent().top_3(ideas, brand_evaluations)[: settings.top_k]
     image_agent = ImageAgent()
     blog_posts = [image_agent.plan(WriterAgent().write(item)) for item in top_3]
 
     assert len(trend_results) > 0
     assert len(seo_results) > 0
-    assert len(ideas) >= 10
+    assert len(ideas) == settings.idea_count
     assert len(brand_evaluations) == len(ideas)
-    assert len(top_3) == 3
-    assert len(blog_posts) == 3
+    assert len(top_3) == settings.top_k
+    assert len(blog_posts) == settings.top_k
 
     seo_keywords = {item.keyword for item in seo_results}
     for idea in ideas:
@@ -91,14 +94,15 @@ def test_mock_workflow_data_flow_is_connected():
 
 
 def test_workflow_result_contains_connected_data():
+    settings = get_settings()
     result = run_workflow()
 
     assert "ideas" in result
     assert "top_3" in result
     assert "blog_posts" in result
-    assert len(result["ideas"]) >= 10
-    assert len(result["top_3"]) == 3
-    assert len(result["blog_posts"]) == 3
+    assert len(result["ideas"]) == settings.idea_count
+    assert len(result["top_3"]) == settings.top_k
+    assert len(result["blog_posts"]) == settings.top_k
 
     idea_titles = {item.title for item in result["ideas"]}
     top3_titles = {item.idea.title for item in result["top_3"]}

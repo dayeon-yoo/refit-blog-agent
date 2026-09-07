@@ -10,9 +10,6 @@ from orchestrator.workflow import run_workflow
 
 def main() -> None:
     settings = get_settings()
-    if not settings.mock_mode:
-        print("MOCK_MODE must be true for the current mock-only workflow.")
-        return
 
     result = run_workflow()
     output_dir = Path(__file__).resolve().parent / "outputs"
