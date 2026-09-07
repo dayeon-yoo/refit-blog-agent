@@ -7,6 +7,7 @@ from agents.image_agent import ImageAgent
 from agents.seo_agent import SEOAgent
 from agents.trend_agent import TrendAgent
 from agents.writer_agent import WriterAgent
+from agents.tag_agent import TagAgent, MockKeywordDataProvider
 from config.settings import get_settings
 from models.schemas import WorkflowResult
 from orchestrator.dedupe import filter_duplicates
@@ -59,7 +60,20 @@ def run_workflow() -> WorkflowResult:
 
     writer = WriterAgent()
     image_agent = ImageAgent()
-    blog_posts = [image_agent.plan(writer.write(idea)) for idea in top_3]
+
+    # Tag recommendation: use Mock provider when running in mock_mode
+    settings = get_settings()
+    provider = MockKeywordDataProvider()
+    tag_agent = TagAgent(provider=provider)
+
+    blog_posts = []
+    for idea in top_3:
+        post = writer.write(idea)
+        # recommend tags (adds `tags` list to BlogPost)
+        _ = tag_agent.recommend(post)
+        # then plan images
+        planned = image_agent.plan(post)
+        blog_posts.append(planned)
 
     return WorkflowResult(
         ideas=idea_candidates,

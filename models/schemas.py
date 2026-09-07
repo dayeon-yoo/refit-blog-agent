@@ -78,6 +78,8 @@ class BlogPost(RIFITBaseModel):
     summary: str
     cta: str
     image_plan: Optional[ImagePlan] = None
+    # Final tags for publishing: list of tag strings (max 30 expected)
+    tags: Optional[List[str]] = None
 
 
 class WorkflowResult(RIFITBaseModel):
@@ -102,3 +104,18 @@ class WorkflowResult(RIFITBaseModel):
 
     def get(self, key: str, default=None):
         return getattr(self, key, default)
+
+
+class TagRecommendation(RIFITBaseModel):
+    tag: str
+    relevance_score: float = Field(..., ge=0.0, le=1.0)
+    # Mockable/provider metrics (may be None if provider doesn't supply them)
+    search_volume: Optional[int] = None
+    competition: Optional[float] = Field(None, ge=0.0, le=1.0)
+    publishing_volume: Optional[int] = None
+    saturation: Optional[float] = Field(None, ge=0.0, le=1.0)
+    ranking_score: float = Field(..., ge=0.0, le=1.0)
+
+
+class TagRecommendationResult(RIFITBaseModel):
+    tags: List[TagRecommendation]
