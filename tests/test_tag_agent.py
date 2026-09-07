@@ -4,6 +4,7 @@ from agents.tag_agent import KeywordDataProvider, MockKeywordDataProvider, TagAg
 from models.schemas import BlogPost, BlogIdea, ScoredIdea, TagRecommendationResult
 from agents.writer_agent import WriterAgent
 from agents.image_agent import ImageAgent
+from llm.client import MockLLMClient
 
 
 def make_sample_post() -> BlogPost:
@@ -11,9 +12,10 @@ def make_sample_post() -> BlogPost:
         title="How to grow tomatoes at home",
         keyword="home gardening",
         search_intent="정보형",
-        angle="방법",
+        angle="growing tomatoes at home with practical planting and care steps",
         rifit_connection="gardening",
         seasonality=0.5,
+        summary="A practical guide to growing and caring for tomatoes at home.",
     )
 
     scored = ScoredIdea(
@@ -24,7 +26,7 @@ def make_sample_post() -> BlogPost:
         idea=idea,
     )
 
-    writer = WriterAgent()
+    writer = WriterAgent(MockLLMClient())
     post = writer.write(scored)
     return post
 
