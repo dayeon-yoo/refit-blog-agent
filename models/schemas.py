@@ -115,6 +115,7 @@ class TagRecommendation(RIFITBaseModel):
     competition: Optional[float] = Field(None, ge=0.0, le=1.0)
     publishing_volume: Optional[int] = None
     saturation: Optional[float] = Field(None, ge=0.0, le=1.0)
+    metrics_available: bool = False
     ranking_score: float = Field(..., ge=0.0, le=1.0)
 
 

@@ -72,6 +72,24 @@ or:
 python -m pytest -q
 ```
 
+## Naver Search Ads keyword provider
+
+The default provider remains the deterministic mock provider. To use the Naver
+Search Ads keyword tool explicitly, set `MOCK_MODE=false` and
+`KEYWORD_PROVIDER=naver`, then provide these values in `.env`:
+
+```dotenv
+KEYWORD_PROVIDER=naver
+NAVER_SEARCHAD_API_KEY=
+NAVER_SEARCHAD_SECRET_KEY=
+NAVER_SEARCHAD_CUSTOMER_ID=
+```
+
+To issue credentials, sign in to the Naver Search Ads advertiser center, open
+`Tools > API Manager`, accept the API terms, and create an API license. Use the
+issued API key and secret key, and copy the advertiser Customer ID into `.env`.
+Never commit real credentials.
+
 ## Important constraints
 
 This project intentionally does not perform any of the following in the current phase:

@@ -11,6 +11,17 @@ from agents.tag_agent import TagAgent, MockKeywordDataProvider
 from config.settings import get_settings
 from models.schemas import WorkflowResult
 from orchestrator.dedupe import filter_duplicates
+from providers.naver_keyword_provider import NaverKeywordProvider
+
+
+def build_keyword_provider():
+    """Select a keyword provider without silently falling back from Naver."""
+    settings = get_settings()
+    if settings.mock_mode or settings.keyword_provider == "mock":
+        return MockKeywordDataProvider()
+    if settings.keyword_provider == "naver":
+        return NaverKeywordProvider()
+    raise ValueError(f"Unsupported KEYWORD_PROVIDER: {settings.keyword_provider}")
 
 
 def run_workflow() -> WorkflowResult:
@@ -74,9 +85,8 @@ def run_workflow() -> WorkflowResult:
     writer = WriterAgent()
     image_agent = ImageAgent()
 
-    # Tag recommendation: use Mock provider when running in mock_mode
-    settings = get_settings()
-    provider = MockKeywordDataProvider()
+    # MOCK_MODE always wins; Naver is selected explicitly with KEYWORD_PROVIDER=naver.
+    provider = build_keyword_provider()
     tag_agent = TagAgent(provider=provider)
 
     blog_posts = []
