@@ -1,11 +1,25 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from llm.client import LLMClient, get_llm_client
 from config.settings import get_settings
 from models.schemas import BlogIdea
+import math
+
+
+def _tokens(text: str) -> Set[str]:
+    # simple whitespace-based tokens, remove short tokens
+    return {t for t in text.lower().split() if len(t) > 1}
+
+
+def _jaccard(a: Set[str], b: Set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    inter = a & b
+    uni = a | b
+    return len(inter) / len(uni)
 
 
 class IdeaGenerator:
@@ -64,47 +78,103 @@ class IdeaGenerator:
                 if s.keyword not in seeds:
                     seeds.append(s.keyword)
 
-        # editorial perspectives to diversify idea types
+        # editorial perspectives to diversify idea topics (no seed injection into title)
         perspectives = [
-            ("wardrobe", "실용적인 옷장 정리/관리와 적용 방법"),
-            ("reuse", "헌옷 처리와 재사용 경로 안내"),
-            ("recycle", "의류 수거와 재활용/업사이클링 소개"),
-            ("resale", "중고 거래/세컨핸드 판매 전략"),
-            ("vintage", "빈티지 스타일과 리폼 아이디어"),
-            ("repair", "수선/리폼/업사이클링 실전 가이드"),
-            ("habit", "지속 가능한 소비 습관과 의류 소비의 대안"),
-            ("care", "실용적인 의류 관리와 세탁/보관 팁"),
+            ("옷장 정리", "옷장 정리 - 공간 구성과 분류 기준, 정리 루틴 중심의 실용적 접근"),
+            ("의류 관리", "의류 관리 - 소재별 세탁·보관·수선 관점의 실무 조언"),
+            ("헌옷 처리", "헌옷 처리 - 기부·수거·정리 단계에서의 실용 가이드"),
+            ("의류 재활용", "재활용/업사이클링 - 재료 분리와 재활용 아이디어 소개"),
+            ("재사용", "재사용 - 집에서 다시 쓰기 가능한 아이템 선정과 준비 방법"),
+            ("중고 거래", "중고 판매/리셀 - 사진·설명·가격 책정 팁과 플랫폼별 전략"),
+            ("빈티지", "빈티지 스타일 - 리폼으로 가치 올리기와 스타일 연출"),
+            ("수선/리폼", "수선·리폼 - 간단 수선으로 수명 늘리는 방법과 비용 가이드"),
+            ("소비 습관", "소비 습관 - 장기적 의류 소비 절약과 계획 방법"),
+            ("환경/순환", "환경과 의류 순환 - 지역 자원과 기부 연결 방법 및 영향"),
         ]
 
-        # title templates per perspective
+        # natural title templates per perspective — avoid English tokens and machiney patterns
         templates = {
-            "wardrobe": ["{seed}로 옷장 정리할 때 꼭 확인할 5가지", "{seed}을(를) 바로 정리하는 현실적 가이드"],
-            "reuse": ["{seed}을(를) 기부하거나 재사용할 때 체크리스트", "{seed} 재사용 전 꼭 확인할 점"],
-            "recycle": ["{seed}을(를) 재활용/업사이클링으로 연결하는 방법", "{seed} 재활용 아이디어: 이렇게 활용하세요"],
-            "resale": ["{seed} 판매 전 알아둘 리셀 팁", "{seed}을(를) 중고로 높은 가격에 파는 법"],
-            "vintage": ["{seed}에서 찾은 빈티지 스타일 적용법", "{seed} 리폼으로 빈티지 무드 만들기"],
-            "repair": ["{seed} 수선으로 오래 입는 법", "{seed}을(를) 집에서 손쉽게 수선하는 방법"],
-            "habit": ["{seed}으로 시작하는 지속 가능한 옷 소비 습관", "{seed}을 통해 소비를 줄이는 실천법"],
-            "care": ["{seed} 소재별 세탁·건조 체크리스트", "{seed} 보관 전 꼭 확인할 사항"],
+            "옷장 정리": [
+                "지금 당장 옷장 한 칸 정리로 생활을 가볍게 만드는 방법",
+                "옷장 정리를 빠르게 끝내는 실전 루틴"
+            ],
+            "의류 관리": [
+                "소재별로 알아보는 세탁·보관의 기본",
+                "자주 입는 옷 오래 입히는 작은 습관"
+            ],
+            "헌옷 처리": [
+                "헌옷 보낼 때 이것만은 꼭 확인하세요",
+                "헌옷을 기부하거나 재사용할 때 실수하지 않는 법"
+            ],
+            "의류 재활용": [
+                "버려진 옷을 새롭게 바꾸는 재활용 아이디어",
+                "작은 수선으로 만드는 업사이클링 사례"
+            ],
+            "재사용": [
+                "집에서 바로 재사용할 수 있는 의류 정리법",
+                "다음 시즌까지 입을 옷을 고르는 기준"
+            ],
+            "중고 거래": [
+                "중고로 잘 팔리는 사진과 설명의 비결",
+                "리셀 전 꼭 확인할 체크포인트"
+            ],
+            "빈티지": [
+                "빈티지 무드 내는 간단한 리폼 아이디어",
+                "오래된 옷을 스타일로 살리는 방법"
+            ],
+            "수선/리폼": [
+                "집에서 시도해볼 수 있는 쉬운 옷 수선 가이드",
+                "수선 비용과 효과를 비교해보는 방법"
+            ],
+            "소비 습관": [
+                "옷 구매 빈도를 줄이는 실천법",
+                "필요한 옷만 남기는 소비 계획 세우기"
+            ],
+            "환경/순환": [
+                "동네에서 할 수 있는 의류 순환 참여 방법",
+                "의류 순환이 환경에 주는 영향과 시작 방법"
+            ],
         }
 
         candidates = []
         seen_titles = set()
+        seen_token_sets: List[Set[str]] = []
 
-        # interleave seeds with perspectives to produce diverse candidates
-        p_count = len(perspectives)
-        p_index = 0
+        # iterate seeds and perspectives to generate candidates; ensure intra-run diversity
         s_index = 0
+        p_index = 0
         while len(candidates) < idea_count and (s_index < len(seeds)):
             seed = seeds[s_index]
-            perspective_key, perspective_desc = perspectives[p_index % p_count]
-            tmpl = templates[perspective_key][(s_index + p_index) % len(templates[perspective_key])]
-            title = tmpl.format(seed=seed)
+            perspective = perspectives[p_index % len(perspectives)]
+            key = perspective[0]
+            angle_desc = perspective[1]
+            tmpl_list = templates.get(key, [templates[list(templates.keys())[0]][0]])
+            tmpl = tmpl_list[(s_index + p_index) % len(tmpl_list)]
+
+            # produce title without forcing seed inclusion
+            title = tmpl
+
+            # avoid duplicate or overly similar titles within this run
+            tok = _tokens(title)
+            too_similar = False
+            for prev in seen_token_sets:
+                if _jaccard(tok, prev) > 0.45:
+                    too_similar = True
+                    break
+            if too_similar:
+                # advance perspective to try a different angle
+                p_index += 1
+                # if we've cycled through many perspectives, fallback to add variant with seed as suffix phrase
+                if p_index - s_index > len(perspectives) * 2:
+                    title = f"{tmpl} — {seed}과 연결된 실전 방법"
+                    tok = _tokens(title)
+                    too_similar = False
+
             if title in seen_titles:
-                # try alternate template or skip
-                alt = templates[perspective_key][0].format(seed=seed)
-                title = alt
-            seen_titles.add(title)
+                # avoid identical title
+                p_index += 1
+                s_index += 1
+                continue
 
             # pick keyword and seasonality from matching seo or trend
             keyword = seed
@@ -128,21 +198,24 @@ class IdeaGenerator:
                     "title": title,
                     "keyword": keyword,
                     "search_intent": search_intent,
-                    "angle": perspective_desc,
+                    "angle": angle_desc,
                     "rifit_connection": "의류 순환/수거/재사용과 연결되는 실용적 콘텐츠",
                     "seasonality": seasonality,
                 }
             )
 
-            # advance perspective and seed indexes
+            seen_titles.add(title)
+            seen_token_sets.append(tok)
+
+            # advance indices
             p_index += 1
-            if p_index % p_count == 0:
+            if p_index % len(perspectives) == 0:
                 s_index += 1
 
-        # if still short, fill with sensible variants
+        # if still short, fill with non-seed generic variants
         i = 1
         while len(candidates) < idea_count:
-            title = f"의류 재사용과 순환: 실용 팁 {i}"
+            title = f"의류 순환을 일상에 적용하는 실용적 방법 {i}"
             if title not in seen_titles:
                 candidates.append({
                     "title": title,
