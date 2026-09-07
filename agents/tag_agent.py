@@ -71,79 +71,315 @@ class TagAgent:
     def _normalize(self, s: str) -> str:
         return " ".join(s.lower().strip().split())
 
+    def _clean_tag_raw(self, s: str) -> str:
+        """Clean punctuation and unwanted characters from a raw candidate."""
+        # keep Hangul, ascii letters/numbers and spaces
+        import re
+
+        if not s:
+            return ""
+        # normalize whitespace
+        s = " ".join(s.split())
+        # remove common english template tokens punctuation
+        s = re.sub(r"[,!/\\+\(\)\[\]<>\|\?\"]+", " ", s)
+        # strip stray punctuation
+        s = s.strip(" -:;,." )
+        # remove common trailing Korean particle suffixes when attached
+        s = re.sub(r"(.*?)(으로써|으로서|으로|로|에서|에게|에게서|에게로|에|으로서)$", r"\1", s)
+        return s
+
+    def _to_tag_form(self, s: str) -> str:
+        """Convert a cleaned phrase into a tag-friendly normalized form.
+
+        Strategy: remove short particle tokens and join remaining tokens without spaces
+        to produce compact noun-phrase-like tags (e.g., '옷장 정리' -> '옷장정리').
+        Avoid producing empty results.
+        """
+        if not s:
+            return ""
+        tokens = [t for t in s.split() if t]
+        # remove obvious single-character Korean particles
+        particles = {"이", "가", "은", "는", "을", "를", "에", "의", "로", "와", "과", "도", "만", "께", "에서"}
+        filtered = [t for t in tokens if not (len(t) == 1 and t in particles)]
+        if not filtered:
+            filtered = tokens
+        # join tokens to form compact tag
+        tag = "".join(filtered)
+        return tag
+
+    def _is_malformed_korean(self, s: str) -> bool:
+        bad_subs = ["은(는)", "을(를)", "이(가)", "하는법", "방법은", "정리을", "재사용을"]
+        low = s.lower()
+        for b in bad_subs:
+            if b in low:
+                return True
+        return False
+
+    def _is_likely_noun(self, token: str) -> bool:
+        """Relaxed heuristic: accept multi-character tokens that are not obviously
+        sentence fragments or english function words. We allow noun-phrases and
+        compound words commonly used as tags (e.g., '옷장정리', '가을옷정리',
+        '옷정리방법'). Reject very short tokens or strings with sentence markers.
+        """
+        if not token:
+            return False
+        low = token.lower()
+        # too short
+        if len(low) < 2:
+            return False
+        # obvious question/verb fragments that look like sentences
+        bad_endings = ("어떻게", "해야", "해야할까", "할까", "해야할지", "할지")
+        for be in bad_endings:
+            if low.endswith(be) or be in low:
+                return False
+        # disallow pure punctuation or tokens containing punctuation
+        import re
+
+        if re.search(r"[\,\.!\?\+/:;@#\$%\^&\*\\()\[\]<>\|]", low):
+            return False
+        # allow longer ascii words (>=4) as potential english keywords
+        if all(ord(c) < 128 for c in token):
+            return len(token) >= 4
+        return True
+
+    def _contains_english_templates(self, s: str) -> bool:
+        low = s.lower()
+        bad = ["how to", "guide", "tips", "problem", "problems", "vs", "alternatives", "howto"]
+        for b in bad:
+            if b in low:
+                return True
+        return False
+
+    def is_valid_tag(self, tag: str, post: BlogPost) -> bool:
+        """Validate a normalized tag string for suitability.
+
+        - Not empty, reasonable length
+        - No english template remnants
+        - No malformed Korean markers
+        - Not sentence-like or containing internal metadata
+        - Related to the post at a minimal level (token overlap)
+        """
+        if not tag:
+            return False
+        # basic length checks
+        if len(tag) < 2 or len(tag) > 60:
+            return False
+        # disallow punctuation
+        import re
+
+        if re.search(r"[\,\.!\?\+/:;@#\$%\^&\*\\\(\)\[\]<>\|]", tag):
+            return False
+
+        if self._contains_english_templates(tag):
+            return False
+        if self._is_malformed_korean(tag):
+            return False
+
+        low = tag.lower()
+        # internal metadata blocklist
+        metas = ["seo", "검색의도", "검색 의도", "ai", "agent", "prompt", "브랜드평가", "content 생성", "콘텐츠생성"]
+        for m in metas:
+            if m in low:
+                return False
+
+        # avoid question-like tags
+        questions = ["어떻게", "할까", "해야", "어디", "어떤"]
+        for q in questions:
+            if q in low:
+                return False
+
+        # minimal relatedness: require tag to contain at least one meaningful token
+        raw_key = self._normalize((post.title or "") + " " + (post.keyword or "") + " " + (post.summary or "") + " " + (post.content or ""))
+        key_tokens = [k for k in raw_key.split() if len(k) > 1]
+        stopwords = {"지금", "당장", "방법론", "생활", "것", "이", "가", "을", "를", "에", "의", "로", "한", "수", "중"}
+        key_tokens = [k for k in key_tokens if k not in stopwords]
+        if not key_tokens:
+            return False
+
+        # if tag contains any key token, accept (covers noun-phrases and compound forms)
+        for kt in key_tokens:
+            if kt and kt in low:
+                return True
+
+        # allow if shares a meaningful 2-char substring with title/keyword (fallback)
+        t = self._normalize((post.title or "") + " " + (post.keyword or ""))
+        for i in range(max(0, len(t) - 1)):
+            sub = t[i : i + 2]
+            if sub and sub in low and sub not in stopwords:
+                return True
+
+        return False
+
     def _ngrams(self, words: List[str], n: int) -> List[str]:
         return [" ".join(words[i : i + n]) for i in range(max(0, len(words) - n + 1))]
 
     def generate_candidates(self, post: BlogPost, target: int = 80) -> List[str]:
-        parts: List[str] = []
-        title = self._normalize(post.title)
-        keyword = self._normalize(post.keyword)
+        # Hierarchical, combination-based candidate generation
+        title = self._normalize(post.title or "")
+        keyword = self._normalize(post.keyword or "")
         summary = self._normalize(post.summary or "")
         content = self._normalize(post.content or "")
 
-        # Base: explicit keyword and title
-        if keyword:
-            parts.append(keyword)
-        if title and title != keyword:
-            parts.append(title)
+        text_blob = " ".join([title, keyword, summary, content])
 
-        # n-grams from title and summary (1-3 grams)
-        for text in (title, summary):
-            words = [w for w in text.split() if len(w) > 1]
-            for n in (1, 2, 3):
-                parts.extend(self._ngrams(words, n))
+        # Helper: extract tokens (words of length>1)
+        def tokens_from(text: str):
+            return [w for w in text.split() if len(w) > 1]
 
-        # Method/problem phrasing
-        if keyword:
-            parts.extend([
-                f"how to {keyword}",
-                f"{keyword} tips",
-                f"{keyword} guide",
-                f"{keyword} problems",
-                f"{keyword} vs alternatives",
-            ])
+        title_tokens = tokens_from(title)
+        keyword_tokens = tokens_from(keyword)
+        summary_tokens = tokens_from(summary)
+        content_tokens = tokens_from(content)
 
-        # Derive related broader terms from keyword tokens
-        kw_tokens = keyword.split()
-        if len(kw_tokens) > 1:
-            parts.append(kw_tokens[-1])
-            parts.append(" ".join(kw_tokens[:-1]))
+        all_tokens = list(dict.fromkeys(title_tokens + keyword_tokens + summary_tokens + content_tokens))
 
-        # Short phrases from content: first 40 words window
-        content_words = [w for w in content.split() if len(w) > 1]
-        for i in range(min(10, len(content_words))):
-            n = 2
-            if i + n <= len(content_words):
-                parts.append(" ".join(content_words[i : i + n]))
+        # synonym map to prefer natural Korean words
+        syn = {"의류": "옷", "의복": "옷", "의상": "옷", "의류관리": "옷관리"}
 
-        # Clean, unique and limit
+        # core nouns (bases) that are likely to form tags
+        # preserve token order (title/keyword/summary/content) and dedupe
+        core_bases = []
+        def push_core(x: str):
+            if not x:
+                return
+            if x not in core_bases:
+                core_bases.append(x)
+
+        for t in all_tokens:
+            t_clean = self._clean_tag_raw(t)
+            if not t_clean:
+                continue
+            mapped = syn.get(t_clean, t_clean)
+            push_core(mapped)
+
+        # ensure explicit keyword tokens appear first
+        for t in keyword_tokens:
+            if t:
+                push_core(syn.get(t, t))
+
+        # predefined concept stems to consider when present in text
+        concept_stems = ["정리", "기부", "재활용", "중고", "수거", "판매", "처리", "보관", "재사용", "순환"]
+
+        present_stems = [s for s in concept_stems if s in text_blob]
+
+        candidates: List[str] = []
         seen = set()
-        cleaned: List[str] = []
-        for p in parts:
-            tag = self._normalize(p)
+
+        def add_candidate(raw: str):
+            if not raw:
+                return
+            cleaned = self._clean_tag_raw(raw)
+            if not cleaned:
+                return
+            tag = self._to_tag_form(cleaned)
             if not tag:
+                return
+            tag_norm = self._normalize(tag)
+            if tag_norm in seen:
+                return
+            # basic filtering: no long sentences or punctuation
+            if len(tag_norm) < 2 or len(tag_norm) > 60:
+                return
+            import string
+            if any(ch in string.punctuation for ch in tag_norm):
+                return
+            seen.add(tag_norm)
+            candidates.append(tag_norm)
+
+        # Step 1: Core topic candidates (A)
+        for base in list(core_bases):
+            add_candidate(base)
+            add_candidate(base + "정리")
+            add_candidate(base + "정리")
+            add_candidate(base + "정리방법")
+
+        # Step 2: search-like noun-phrases (B)
+        suffixes_b = ["정리방법", "정리팁", "정리노하우", "정리방법", "정리팁"]
+        for base in list(core_bases):
+            for sfx in suffixes_b:
+                add_candidate(base + sfx)
+        # season-aware combos
+        seasons = [w for w in ["봄", "여름", "가을", "겨울", "계절"] if w in text_blob]
+        for season in seasons:
+            for base in list(core_bases):
+                add_candidate(season + base + "정리")
+                add_candidate(season + base)
+
+        # Step 3: action/problem related (C)
+        action_sfx = ["처리", "기부", "수거", "버리기", "판매"]
+        for base in list(core_bases):
+            for sfx in action_sfx:
+                add_candidate(base + sfx)
+        # commonly used problem phrases
+        if "헌옷" in text_blob or "헌 옷" in text_blob:
+            add_candidate("헌옷정리")
+            add_candidate("헌옷처리")
+
+        # Step 4: related concept combos (D)
+        rel_sfx = ["재사용", "재활용", "중고", "순환"]
+        for base in list(core_bases):
+            for sfx in rel_sfx:
+                add_candidate(base + sfx)
+
+        # Step 5: useful concatenations from title/keyword n-grams (2-3)
+        for src in (title_tokens, keyword_tokens, summary_tokens):
+            for n in (2, 3):
+                words = [w for w in src if len(w) > 1]
+                for i in range(max(0, len(words) - n + 1)):
+                    seq = "".join(words[i : i + n])
+                    add_candidate(seq)
+
+        # Ensure candidates are related: require at least one core token present
+        filtered = []
+        for c in candidates:
+            # reject sentence-like strings
+            if any(q in c for q in ["어떻게", "할까", "해야", "어디", "어떤"]):
                 continue
-            if tag in seen:
-                continue
-            # simple length/filter heuristics
-            if len(tag) < 2 or len(tag) > 80:
-                continue
-            seen.add(tag)
-            cleaned.append(tag)
-            if len(cleaned) >= self.max_candidates:
+            # require c to include at least one of core_bases or concept stems
+            if not any(x in c for x in core_bases) and not any(s in c for s in present_stems):
+                # allow if bigram of title/keyword present
+                if not any(t in c for t in keyword_tokens + title_tokens):
+                    continue
+            filtered.append(c)
+
+        # Cluster similar variants by root (strip common suffixes) and keep representative variants
+        def root_of(tag: str) -> str:
+            suf = ["방법", "팁", "노하우", "하기", "정보", "추천", "정리", "정리방법", "정리팁"]
+            r = tag
+            for s in suf:
+                if r.endswith(s):
+                    r = r[: -len(s)]
+            return r if r else tag
+
+        groups: Dict[str, List[str]] = {}
+        for c in filtered:
+            r = root_of(c)
+            groups.setdefault(r, []).append(c)
+
+        final_candidates: List[str] = []
+        # for each group, choose up to 2 representatives (prefer shorter/base and one variant)
+        for r, variants in groups.items():
+            # sort variants by preference: shorter and containing '정리' or meaningful suffix
+            variants_sorted = sorted(variants, key=lambda x: (len(x), '정리' not in x, x))
+            pick = variants_sorted[:2]
+            for p in pick:
+                if p not in final_candidates:
+                    final_candidates.append(p)
+            if len(final_candidates) >= self.max_candidates:
                 break
 
-        # If too few, include simple tokens from title/keyword
-        if len(cleaned) < target:
-            extras = list({t for t in (title + " " + keyword).split() if len(t) > 2})
-            for e in extras:
-                if e not in seen:
-                    cleaned.append(e)
-                    seen.add(e)
-                if len(cleaned) >= target:
+        # If still short, expand with more variants from groups
+        if len(final_candidates) < min(target, self.max_candidates):
+            for r, variants in groups.items():
+                for v in variants:
+                    if v not in final_candidates:
+                        final_candidates.append(v)
+                    if len(final_candidates) >= min(target, self.max_candidates):
+                        break
+                if len(final_candidates) >= min(target, self.max_candidates):
                     break
 
-        return cleaned[: max(target, 0)]
+        return final_candidates[: min(target, self.max_candidates)]
 
     def _relevance(self, tag: str, post: BlogPost) -> float:
         # Simple overlap heuristic between tag and title/summary/keyword
