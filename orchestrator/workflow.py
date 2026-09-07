@@ -32,10 +32,23 @@ def run_workflow() -> WorkflowResult:
 
     # Duplicate Check: filter out ideas that are substantively similar to past outputs
     deduped_candidates = filter_duplicates(idea_candidates)
-    # If all ideas removed by dedupe, fall back to original candidates to avoid empty pipeline
+    # If dedupe removed all ideas, fall back to original candidates to avoid empty pipeline
     if not deduped_candidates:
-        deduped_candidates = idea_candidates[: max(1, min(top_k, len(idea_candidates)))]
-    idea_candidates = deduped_candidates
+        # if dedupe removed everything, restore up to the requested idea_limit
+        deduped_candidates = idea_candidates[: idea_limit]
+    else:
+        # If dedupe removed some candidates but fewer than requested, top up with original candidates
+        if len(deduped_candidates) < idea_limit:
+            existing_titles = {c.title for c in deduped_candidates}
+            for c in idea_candidates:
+                if c.title in existing_titles:
+                    continue
+                deduped_candidates.append(c)
+                existing_titles.add(c.title)
+                if len(deduped_candidates) >= idea_limit:
+                    break
+
+    idea_candidates = deduped_candidates[:idea_limit]
 
     brand_evaluations = BrandAgent().run(idea_candidates)
     if not brand_evaluations:

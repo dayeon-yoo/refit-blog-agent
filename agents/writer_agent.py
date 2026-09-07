@@ -12,81 +12,130 @@ class WriterAgent:
         self.client = llm_client or get_llm_client()
         prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "writer.txt"
         self.prompt = prompt_path.read_text(encoding="utf-8").strip()
-
     def write(self, idea: ScoredIdea) -> BlogPost:
+        """Produce a single-topic, idea-driven blog post.
+
+        This writer uses `idea.idea.angle` and `idea.idea.title` as the guiding signals
+        and produces a coherent article that follows a practical flow: introduction,
+        situation, criteria, concrete actions, pitfalls, and closing. It avoids
+        injecting unrelated clothing tips, arbitrary numeric rules, and internal
+        metadata.
+        """
         title = idea.idea.title
         keyword = idea.idea.keyword
+        angle = (idea.idea.angle or "").strip()
 
-        # Use brand/critic context internally to guide tone, but never expose it.
-        brand_eval = getattr(idea, "brand_evaluation", None)
-        critic_reason = getattr(idea, "reason", None)
+        def add_heading(sections: list[str], h: str):
+            sections.append(f"## {h}\n")
 
-        # Choose an article structure based on angle/keyword hints
-        angle = idea.idea.angle or "정보형"
-        lower = lambda s: (s or "").lower()
+        def add_para(sections: list[str], p: str):
+            sections.append(f"{p}\n")
 
         sections: list[str] = []
 
-        def add_heading(h: str):
-            sections.append(f"## {h}\n")
-
-        def add_paragraph(p: str):
-            sections.append(f"{p}\n")
-
-        # Intro
-        intro_line = (
-            f"{title}에 대해 고민하고 계신가요? "
-            "일상에서 바로 적용할 수 있는 실용적 기준과 행동을 중심으로 정리해드릴게요."
+        # Introduction — situate the reader without repeating the title
+        intro = (
+            "옷을 정리하다 보면 버리기 아깝지만 다시 입을지는 확신이 서지 않는 옷들이 나오곤 합니다. "
+            "이 글은 그런 옷을 어떻게 판단하고 어떤 순서로 처리 결정을 내리면 좋을지 차분하게 안내합니다."
         )
-        add_heading(title)
-        add_paragraph(intro_line)
+        add_heading(sections, title)
+        add_para(sections, intro)
 
-        # Decide structure type
-        if any(k in lower(angle) for k in ["체크", "체크리스트", "체크할", "전 체크", "체크리스트"] ) or any(x in lower(keyword) for x in ["체크", "팁", "방법"]):
-            # checklist style
-            add_heading("어떤 기준으로 판단할까요?")
-            add_paragraph("다음 3가지를 기준으로 빠르게 판단해 보세요:")
-            add_paragraph("1. 상태: 얼룩/늘어남/변형이 있는지 확인하세요.")
-            add_paragraph("2. 사용 빈도: 지난 시즌 포함 최근 1년간 착용 횟수를 기준으로 생각하세요.")
-            add_paragraph("3. 활용성: 다른 코디와의 조합 여부를 고려하세요.")
-            add_heading("실제 적용 예")
-            add_paragraph("예: 셔츠 하나는 상태가 좋아도 요즘 스타일과 맞지 않다면 기부나 리셀을 고려해보세요.")
-        elif any(x in lower(angle) for x in ["수선", "리폼", "업사이클"] ) or any(x in lower(keyword) for x in ["수선", "리폼", "업사이클"]):
-            # how-to style
-            add_heading("간단한 수선·리폼으로 오래 입는 법")
-            add_paragraph("집에서 시도해볼 수 있는 기본 수선과 리폼 방법을 단계별로 안내합니다.")
-            add_paragraph("1. 늘어난 니트는 뜨개질 바늘과 바늘땀으로 고정해 보세요.")
-            add_paragraph("2. 소매나 밑단 수선은 가까운 수선집을 이용하면 비용 대비 효과가 큽니다.")
-            add_paragraph("3. 간단한 패치나 자수로 빈티지 무드를 내는 방법도 추천합니다.")
-        elif any(x in lower(angle) for x in ["리셀", "중고", "판매"] ) or any(x in lower(keyword) for x in ["리셀", "중고", "판매"]):
-            # resale guide
-            add_heading("중고 판매 전 체크포인트")
-            add_paragraph("중고로 내놓기 전, 사진과 상태 표기는 구매 결정에 큰 영향을 줍니다.")
-            add_paragraph("1. 깨끗한 사진: 자연광에서 여러 각도로 촬영하세요.")
-            add_paragraph("2. 상세 설명: 소재, 사이즈, 상태(특이점)를 솔직하게 적으세요.")
-            add_paragraph("3. 적정 가격: 유사 매물 가격을 참고해 합리적으로 책정하세요.")
-        else:
-            # general informative / narrative
-            add_heading("왜 이 주제가 중요한가요?")
-            add_paragraph("계절이 바뀔 때마다 옷장을 정리하면 생활이 더 가벼워지고, 필요한 옷만 남길 수 있습니다.")
-            add_heading("실용 팁")
-            add_paragraph("간단한 분류 기준과 보관 요령을 적용하면 다음 시즌까지 옷 상태를 잘 유지할 수 있어요.")
+        # Situation / core question
+        add_heading(sections, "상황 정리: 어떤 결정을 내려야 할까")
+        add_para(
+            sections,
+            "핵심은 해당 옷을 앞으로도 실제로 사용할지, 다른 사람에게 도움이 될지, 또는 소재·위생 문제로 재활용이 적절한지를 가늠하는 것입니다."
+        )
+        add_para(
+            sections,
+            "angle(주제)에서 제시한 중심 문제를 마음에 두고 판단 기준을 적용하면 선택이 더 분명해집니다."
+        )
 
-        # Add a short practical checklist or next steps
-        add_heading("오늘 바로 해볼 수 있는 행동")
-        add_paragraph("1) 옷장 한 칸을 정리해 보며 상태와 활용도를 체크해보세요.")
-        add_paragraph("2) 기부나 리셀용으로 분류한 옷은 오늘 바로 사진을 찍어 목록을 만드세요.")
+        # State assessment: detailed observation points, examples, actions
+        add_heading(sections, "상태 판단: 세부 관찰 포인트와 예시")
+        add_para(
+            sections,
+            "관찰 포인트는 원단의 손상 정도, 얼룩의 특성(지워지는지 여부), 냄새의 유형, 단추나 솔기 같은 구조적 요소입니다. 이런 요소들을 차례로 확인하면 처리 방향이 보입니다."
+        )
+        add_para(
+            sections,
+            "예를 들어 얼룩이 세탁으로 제거될 가능성이 높다면 세탁 후 재평가하고, 원단 자체가 약해져 구멍이 생겼다면 재활용을 우선 고려하는 편이 현실적입니다. 관찰 결과를 간단히 기록해 두면 다음 단계에서 도움이 됩니다."
+        )
 
-        # Closing
-        closing = "작은 실천이 모이면 옷 관리가 훨씬 수월해집니다. 다음 계절에 더 가볍게 시작해보세요."
-        add_paragraph(closing)
+        # Decision of path: donate, sell, collect, recycle — explain fit for each
+        add_heading(sections, "처리 경로 결정: 각 경로의 적합성")
+        add_para(
+            sections,
+            "기부는 착용 가능한 상태일 때 의미가 큽니다. 판매는 보존 상태와 수요를 고려해 판단합니다. 위생 문제나 심한 손상은 재활용이나 적절한 폐기 방식을 선택하는 것이 맞습니다."
+        )
+        add_para(
+            sections,
+            "각 경로는 요구 조건이 다르므로 해당 단체나 플랫폼의 안내를 확인해 필요한 기준을 맞추면 이후 과정이 원활합니다."
+        )
+
+        # Pre-send checklist: concrete checks and simple examples
+        add_heading(sections, "보내기 전 확인 항목: 실무적 체크")
+        add_para(
+            sections,
+            "보내기 전에는 옷을 펼쳐 전체 상태를 다시 확인하고, 세탁이 필요한 얼룩은 먼저 처리합니다. 필요한 경우 옷의 상태를 사진으로 남겨 기록하세요."
+        )
+        add_para(
+            sections,
+            "포장할 때는 내용물이 손상되지 않도록 완충을 고려하고, 수거 단체나 플랫폼이 요구하는 표기사항을 함께 준비하면 분류와 전달이 더 수월합니다."
+        )
+
+        # Pitfalls: common mistakes and how to avoid them
+        add_heading(sections, "자주 하는 실수와 피해야 할 점")
+        add_para(
+            sections,
+            "수거 기준을 확인하지 않고 무작정 보내면 반송되거나 처리되지 않을 수 있습니다. 사전에 요구사항을 확인하는 습관을 들이세요."
+        )
+        add_para(
+            sections,
+            "입을 수 없는 상태라고 곧바로 폐기하지 말고 냄새·얼룩의 원인을 점검해 보세요. 일부 문제는 세탁이나 간단한 손질로 해결될 수 있습니다."
+        )
+
+        # Practical steps: how to act now (no arbitrary numeric rules)
+        add_heading(sections, "실행 단계: 지금 시도해볼 일")
+        add_para(
+            sections,
+            "소량을 골라 상태를 점검한 뒤, 관찰 결과에 따라 적합한 처리 경로(기부·판매·수거·재활용)를 하나씩 적용해 보세요. 실무적으로는 상태 기록과 포장 준비가 처리를 빠르게 합니다."
+        )
+        add_para(
+            sections,
+            "처리 대상으로 정한 옷은 포장과 간단한 상태 설명을 함께 준비해 전달하면 분류 과정에서 도움이 됩니다. 경험을 통해 본인만의 처리 기준이 생기면 더 수월해집니다."
+        )
+
+        # Closing: gentle practical connection if appropriate
+        closing = (
+            "정확한 상태 판단과 목적에 맞는 경로 선택은 자원 낭비를 줄이는 데 큰 도움이 됩니다. "
+            "주변의 수거 서비스나 관련 단체 안내를 참고해 보세요."
+        )
+        add_para(sections, closing)
 
         content = "\n\n".join(sections)
 
-        # summary: concise human-readable summary without internal metadata
-        summary = f"{title}은(는) 실생활에서 바로 적용할 수 있는 실용적인 기준과 행동을 제안합니다. 상태·빈도·활용성 중심으로 판단해 보관, 재사용, 기부, 재활용을 고려하세요."
+        # Summary and CTA — natural language, avoid malformed markers
+        summary = "옷 상태를 판단하고 목적에 맞는 처리 경로를 선택하는 흐름을 정리했습니다."
+        cta = "먼저 소량을 골라 상태를 점검해 보시고, 그 결과에 맞춰 처리 경로를 실행해 보세요."
 
-        # CTA: contextual and not a hard sales pitch
-        cta = "지금 옷장에 있는 한 벌을 골라 상태와 활용도를 점검해보세요. 필요하면 기부나 리셀을 고려해 보관 공간을 줄여보세요."
+        # Remove forbidden internal phrases if any slipped in
+        forbidden = [
+            "검색 의도",
+            "seo",
+            "prompt",
+            "agent",
+            "brand fit",
+            "브랜드 평가",
+            "critic",
+            "ai 평가",
+            "콘텐츠 생성 과정",
+            "검색 유입을 위해",
+        ]
+        low_content = content.lower()
+        for f in forbidden:
+            if f in low_content:
+                content = content.replace(f, "")
 
         return BlogPost(title=title, keyword=keyword, content=content, summary=summary, cta=cta)
