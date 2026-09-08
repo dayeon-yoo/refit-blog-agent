@@ -11,9 +11,51 @@ title. Turn those details into natural blog titles that describe different
 articles.
 
 Before drafting candidates, distinguish the subject from the user's observation,
-claim, question, contrast, cause-and-effect suggestion, and requested direction.
-Use those relationships in the candidate's angle and brief_description; do not
-make a title by concatenating nouns extracted from the input.
+claim, question, contrast, and explicitly stated details. Use only those source
+roles in the candidate's angle and brief_description; do not make a title by
+concatenating nouns extracted from the input.
+
+SourceIntent provenance contract:
+- Identify contiguous evidence spans in raw_source first, then write the semantic
+  interpretation. Every non-empty evidence field must be copied exactly from
+  raw_source; do not use summaries, paraphrases, or inferred sentences as evidence.
+- Provide evidence for the core subject, core action/message, and core
+  question/claim. `explicit_source_details` and `explicit_contrasts` may contain
+  only directly stated source material and must include corresponding evidence.
+- Evidence proves only provenance, not semantic correctness. Still self-review
+  the interpretation against the source before returning it. Do not add a purpose,
+  benefit, background, or relationship merely because it sounds plausible.
+
+Semantic hierarchy rule:
+Read the source as a small content model before drafting. Identify its core
+subject, core action, core observation or problem, core question or claim,
+explicit source details, examples or options, and explicit contrasts.
+"Mentioned in the source" does not mean "the main topic of the source". Preserve
+the roles of these source elements in every candidate. Do not promote one
+supporting detail, example, option, route, audience, or channel into the whole
+article, and do not replace the core with a broader related thesis.
+
+SourceIntent is the smallest faithful semantic representation of the raw source,
+not content strategy. It must preserve the
+source's hierarchy without adding a purpose, benefit, background motivation, or
+reader outcome that the source does not state. In particular:
+- core_action_or_message must preserve what the author is proposing, questioning,
+  or saying. A rhetorical suggestion such as "계속 두기보다 정리해도 되지
+  않을까?" is not automatically a request for a method, procedure, or guide.
+- core_question_or_claim must preserve the role of the source question: problem
+  statement, rhetorical question, opinion, explicit information request, or
+  explicit procedural request. Do not rewrite every question into "어떻게 하면
+  될까?" or another guide task.
+- explicit_source_details may contain only details directly stated in the raw
+  source. Do not add plausible purposes, benefits, background, space-saving
+  goals, future purchases, or expected reader outcomes.
+- explicit_contrasts must preserve both sides of an actual contrast. Do not
+  create causal, value, comparison, or selection relationships that the source
+  does not state.
+
+Do not make SourceIntent sound more complete by making it more procedural. If the
+source contains an observation followed by a concern and a proposed direction,
+keep that editorial/rhetorical shape even when a guide would be easier to write.
 
 Each candidate must use a distinct perspective or content format when possible.
 Do not fall back to generic wardrobe organization, donation, or recycling topics
@@ -44,10 +86,51 @@ brief_description, and expected body progression meaningfully different. State
 what the reader will learn or decide, and avoid reusing the same sequence of
 trend overview -> generic tips -> conclusion.
 
+Candidate diversity means different hooks, emphasis, framing, reader questions,
+structures, or entry points for the same core intent. It does not mean inventing
+different topics. Before returning the structured result, silently review every
+candidate against the source: confirm that the core subject and core action,
+question, or claim remain; confirm that a supporting option was not promoted;
+confirm that no new comparison, research task, factual requirement, authority,
+or broader thesis was introduced; and confirm that the candidate stays within
+the source's semantic scope. Revise any candidate that fails this review. Do not
+return the review or reasoning in the JSON output.
+
+Fidelity has priority over diversity: raw source fidelity comes first, then the
+SourceIntent semantic core, then candidate usefulness, and only then candidate
+diversity. Content format is not an independent diversity generator. Unless the
+source explicitly requests a method, sequence, procedure, checklist, or guide,
+do not make those tasks the central format merely to produce different candidates.
+Likewise, do not turn parallel examples into a comparison article merely because
+comparison would create a distinct candidate.
+
 If the source includes a contrast or proposed direction such as "새 옷 말고",
 "버리지 말고", "기부 대신", "왜 굳이", "다시", or "오히려", preserve that
 relationship in at least one candidate's central argument. Do not replace it with
 a generic sustainability message or an unrelated fashion topic.
+
+Do not turn parallel alternatives into a comparison article unless the source
+explicitly asks for comparison. Phrases such as "A하거나 B", "A 또는 B", "A나 B",
+"A·B", or "A, B 등" can simply list reuse routes, styling options, or channels.
+Do not invent a frame about which option is better, pros and cons, differences,
+the right choice, or A vs B. Use that comparison framing only when the source
+explicitly says 비교, 장단점, 차이, 무엇이 더 나은지, or vs.
+
+Do not expand a simple reuse or next-use suggestion into a new environmental,
+sustainability, circular-economy, industry, or economic-impact thesis unless the
+source explicitly makes that claim. Keep the source's stated action and subject-
+object relationship instead.
+
+Core-topic and supporting-option rule:
+- When the source names several methods, routes, examples, audiences, or channels,
+  do not promote one of them into the entire candidate's main topic unless the
+  source explicitly asks for that method or channel.
+- Preserve the source's higher-level action or message first. Candidate diversity
+  may vary the hook, emphasis, perspective, structure, or reader question while
+  keeping that core action intact.
+- Mentioning a supporting option is allowed. Turning one option into a dedicated
+  how-to, recommendation, platform guide, institutional program guide, or expert
+  analysis is not allowed when the source did not request that task.
 
 Evidence and audience rule:
 - Do not promote an unmentioned tool, product, place, or specific technique to
@@ -66,4 +149,24 @@ Evidence and audience rule:
   beginner guide, practical information, decision criteria, step-by-step action,
   comparison, checklist, or trend explanation, written in Korean.
 
-Return only an IdeaExpansionResult with source_input and candidates.
+Generation order for this structured response:
+1. Read only the raw source and identify contiguous evidence spans for the core
+   subject, action/message, and question/claim.
+2. Write a minimal SourceIntent from those spans, including explicit source
+   details and explicit contrasts only when they are grounded in the raw source.
+3. Treat that SourceIntent as a fixed semantic anchor for this response.
+4. Generate candidates that share the same core intent. Vary only the hook,
+   emphasis, framing, reader question, structure, or entry point.
+5. Silently self-review the SourceIntent itself: remove any inferred purpose,
+   benefit, background, procedural task, or changed question role before using it
+   as an anchor.
+6. Silently self-review each candidate against the corrected SourceIntent. Do not
+   promote supporting details, add a new task or topic, change an explicit
+   relationship, or leave the source scope merely to make candidates look
+   different.
+7. Return the SourceIntent and candidates in the requested structured response.
+
+The SourceIntent is a positive interpretation of the source, not a blacklist or
+list of forbidden topics. Do not expose reasoning or self-review in the output.
+
+Return the internal structured response with source_input, source_intent, and candidates.

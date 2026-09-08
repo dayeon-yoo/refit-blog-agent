@@ -37,6 +37,8 @@ class MockLLMClient(LLMClient):
             response = self.response_factory(prompt, schema, payload)
         elif schema.__name__ == "BlogPost":
             response = self._default_blog_post(payload)
+        elif schema.__name__ == "InternalIdeaExpansion":
+            response = self._internal_idea_expansion_response(payload)
         elif schema.__name__ == "IdeaExpansionResult":
             response = self._default_idea_expansion(payload)
         elif schema.__name__ == "ContentPlan":
@@ -51,7 +53,46 @@ class MockLLMClient(LLMClient):
             response = self._default_refined_idea(payload)
         else:
             response = payload
+        if schema.__name__ == "InternalIdeaExpansion" and not isinstance(response, schema):
+            response = self._coerce_legacy_expansion_response(response, payload)
         return response if isinstance(response, schema) else schema.model_validate(response)
+
+    @staticmethod
+    def _coerce_legacy_expansion_response(response: Any, payload: Dict[str, Any]) -> Any:
+        """Keep existing expansion fixtures usable after the internal schema change."""
+        if isinstance(response, BaseModel):
+            response = response.model_dump(mode="json")
+        if not isinstance(response, dict) or "source_intent" in response:
+            return response
+        source = str(response.get("source_input", payload.get("user_input", "")))
+        raw_source = str(payload.get("user_input", source)).strip()
+        return {
+            **response,
+            "source_intent": {
+                "core_subject": source,
+                "core_subject_evidence": [raw_source],
+                "core_action_or_message": source,
+                "core_action_evidence": [raw_source],
+                "core_question_or_claim": source,
+                "core_question_evidence": [raw_source],
+            },
+        }
+
+    @staticmethod
+    def _internal_idea_expansion_response(payload: Dict[str, Any]) -> Dict[str, Any]:
+        response = MockLLMClient._default_idea_expansion(payload)
+        source = str(payload.get("user_input", "")).strip()
+        return {
+            **response,
+            "source_intent": {
+                "core_subject": MockLLMClient._extract_idea_context(source)["subject"],
+                "core_subject_evidence": [source],
+                "core_action_or_message": source,
+                "core_action_evidence": [source],
+                "core_question_or_claim": source,
+                "core_question_evidence": [source],
+            },
+        }
 
     def generate_many(self, prompt: str, schema: Type[T], payloads: List[Dict[str, Any]]) -> List[T]:
         if not payloads:

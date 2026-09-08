@@ -9,8 +9,21 @@ from agents.content_planner_agent import ContentPlannerAgent
 from agents.writer_agent import WriterAgent
 from agents.tag_agent import MockKeywordDataProvider, TagAgent
 from llm.client import MockLLMClient
-from main import refine_from_source, run_refined_manual_workflow
-from models.schemas import BlogIdea, IdeaCandidate, IdeaExpansionResult
+from main import (
+    load_latest_expansion,
+    refine_from_source,
+    refine_selected_candidate,
+    save_latest_expansion,
+    select_candidate,
+    run_refined_manual_workflow,
+)
+from models.schemas import (
+    BlogIdea,
+    IdeaCandidate,
+    IdeaExpansionResult,
+    InternalIdeaExpansion,
+    SourceIntent,
+)
 from orchestrator.workflow import run_manual_workflow
 
 
@@ -32,6 +45,270 @@ def test_expand_returns_distinct_source_related_candidates():
     assert any("레몬" in candidate.title or "포도" in candidate.title for candidate in result.candidates)
     assert all(SOURCE not in candidate.title for candidate in result.candidates)
     assert client.calls[0]["payload"]["user_input"] == SOURCE
+
+
+def test_expansion_uses_internal_intent_but_keeps_public_result_contract():
+    client = MockLLMClient()
+
+    result = IdeaGenerator(llm_client=client).expand(SOURCE)
+
+    assert client.calls[0]["schema"] is InternalIdeaExpansion
+    assert isinstance(result, IdeaExpansionResult)
+    assert "source_intent" not in result.model_dump(mode="json")
+    assert "source_intent" not in result.model_dump_json()
+
+
+def test_expansion_prompt_treats_source_intent_as_semantic_compression():
+    generator = IdeaGenerator(llm_client=MockLLMClient())
+    prompt = generator.expansion_prompt
+
+    assert "SourceIntent is the smallest faithful semantic representation" in prompt
+    assert "rhetorical question" in prompt
+    assert "explicit procedural request" in prompt
+    assert "explicit_source_details may contain only details directly stated" in prompt
+    assert "explicit_contrasts must preserve both sides" in prompt
+
+
+def test_expansion_prompt_prioritizes_fidelity_over_format_diversity():
+    generator = IdeaGenerator(llm_client=MockLLMClient())
+    prompt = generator.expansion_prompt
+
+    assert "Fidelity has priority over diversity" in prompt
+    assert "Content format is not an independent diversity generator" in prompt
+    assert "explicitly requests a method" in prompt
+    assert "self-review the SourceIntent itself" in prompt
+
+
+def test_expansion_recovery_reuses_fixed_initial_source_intent():
+    source = "안 입는 옷은 버리지 말고 다음 사람에게 다시 쓰이게 하고 싶다."
+    valid = _expansion_with_titles(
+        source,
+        [
+            "안 입는 옷을 버리지 않고 정리하는 방법",
+            "안 입는 옷을 다음 쓰임으로 보내기",
+            "안 입는 옷을 버리지 않고 다시 활용하는 순서",
+        ],
+    )
+    initial = IdeaExpansionResult.model_validate(valid.model_dump(mode="json"))
+    initial.candidates[0] = initial.candidates[0].model_copy(
+        update={"title": "안 입는 옷을 직접 팔아본 후기"}
+    )
+
+    def response_factory(_prompt, _schema, _payload):
+        return initial if len(client.calls) == 1 else valid
+
+    client = MockLLMClient(response_factory=response_factory)
+    result = IdeaGenerator(llm_client=client).expand(source)
+
+    assert result.candidates[0].title == valid.candidates[0].title
+    assert len(client.calls) == 2
+    assert client.calls[0]["schema"] is InternalIdeaExpansion
+    assert client.calls[1]["schema"] is IdeaExpansionResult
+    fixed_intent = client.calls[1]["payload"]["fixed_source_intent"]
+    assert fixed_intent["core_subject"]
+    assert fixed_intent["core_action_evidence"]
+
+
+def _source_intent_with_evidence(source: str, **updates) -> SourceIntent:
+    values = {
+        "core_subject": "안 입는 옷",
+        "core_subject_evidence": ["안 입는 옷"],
+        "core_action_or_message": "다음 쓰임으로 보내기",
+        "core_action_evidence": ["다음 사람에게 다시 쓰이게"],
+        "core_question_or_claim": "버리지 말고 다시 쓰이게 하기",
+        "core_question_evidence": ["버리지 말고 다음 사람에게 다시 쓰이게"],
+    }
+    values.update(updates)
+    return SourceIntent(**values)
+
+
+def test_source_intent_provenance_accepts_only_raw_source_spans():
+    source = "안 입는 옷은 버리지 말고 다음 사람에게 다시 쓰이게 하고 싶다."
+    intent = _source_intent_with_evidence(source)
+
+    assert IdeaGenerator._source_intent_provenance_issues(source, intent) == []
+
+
+def test_source_intent_provenance_rejects_missing_or_foreign_evidence():
+    source = "안 입는 옷은 버리지 말고 다음 사람에게 다시 쓰이게 하고 싶다."
+    intent = _source_intent_with_evidence(
+        source,
+        core_action_evidence=["옷장을 비워 새 공간을 만든다"],
+    )
+
+    issues = IdeaGenerator._source_intent_provenance_issues(source, intent)
+    assert any("core_action_or_message evidence" in issue for issue in issues)
+
+
+def test_optional_source_intent_provenance_does_not_fail_expansion():
+    source = "안 입는 옷은 버리지 말고 다음 사람에게 다시 쓰이게 하고 싶다."
+    intent = _source_intent_with_evidence(
+        source,
+        explicit_source_details=["새로운 목적"],
+        detail_evidence=["새로운 목적"],
+        explicit_contrasts=["버리지 말고 다음 사람에게 다시 쓰이게"],
+        contrast_evidence=["버리지 말고 다음 사람에게 다시 쓰이게"],
+    )
+
+    issues = IdeaGenerator._source_intent_provenance_issues(source, intent)
+    assert any("explicit_source_details evidence" in issue for issue in issues)
+    before = intent.model_dump()
+    IdeaGenerator._validate_source_intent_provenance(source, intent)
+    assert intent.model_dump() == before
+    assert IdeaGenerator._core_source_intent_provenance_issues(source, intent) == []
+
+
+@pytest.mark.parametrize("recover", [False, True])
+def test_optional_lists_are_preserved_through_expansion_and_recovery(recover, monkeypatch, capsys):
+    source = "안 입는 옷은 버리지 말고 다음 사람에게 다시 쓰이게 하고 싶다."
+    valid = _expansion_with_titles(source, [
+        "안 입는 옷을 버리지 않고 정리하는 방법",
+        "안 입는 옷을 다음 쓰임으로 보내기",
+        "안 입는 옷을 다시 활용하는 순서",
+    ])
+    intent = _source_intent_with_evidence(
+        source,
+        explicit_source_details=["안 입는 옷", "다음 사람", "다시 쓰이게", "보내기"],
+        detail_evidence=[source],
+        explicit_contrasts=["버리지 않기", "다시 쓰이기"],
+        contrast_evidence=["원문에 없는 근거"],
+    )
+    initial = InternalIdeaExpansion(
+        source_input=source, source_intent=intent, candidates=valid.model_copy(deep=True).candidates,
+    )
+    if recover:
+        initial.candidates[0].content_format = "경험 공유"
+    before = intent.model_dump()
+    client = MockLLMClient(response_factory=lambda *_: initial if len(client.calls) == 1 else valid)
+    monkeypatch.setattr(idea_agent_module, "get_settings", lambda: SimpleNamespace(debug=True))
+
+    result = IdeaGenerator(llm_client=client).expand(source)
+
+    assert len(client.calls) == (2 if recover else 1)
+    assert result == valid
+    assert initial.source_intent.model_dump() == before
+    assert "Optional Provenance" in capsys.readouterr().err
+    if recover:
+        assert client.calls[1]["payload"]["fixed_source_intent"] == before
+
+
+@pytest.mark.parametrize(("source", "candidate"), [
+    ("니트나 맨투맨에 보풀이 생기는 이유와 집에서 관리할 수 있는 방법을 순서대로 정리하고 싶다.",
+     "니트와 맨투맨의 보풀 관리와 제거할 때 주의할 점"),
+    ("도자기 균열 원인과 유약 관리 내용을 정리하고 싶다.",
+     "도자기 균열 원인과 유약 관리 안내"),
+    ("도자기 균열 원인과 유약 관리", "도자기 균열 원인과 유약 안내"),
+])
+def test_direct_topic_evidence_is_not_vetoed_by_concepts(source, candidate):
+    assert IdeaGenerator._preserves_core_concepts(source, candidate)
+
+
+@pytest.mark.parametrize("candidate", [
+    "빈티지 청바지의 역사와 집에서 읽는 패션 이야기",
+    "가을 코디를 효과적으로 연출하는 방법",
+])
+def test_incidental_single_term_does_not_rescue_unrelated_candidate(candidate):
+    source = "니트나 맨투맨 보풀 관리 방법을 집에서 살펴보고 순서대로 정리하고 싶다."
+    item = IdeaCandidate(candidate_id="1", title=candidate, perspective="정보 안내",
+                         content_format="가이드", key_question=candidate, brief_description=candidate)
+    assert IdeaGenerator._expansion_candidate_error(source, item) == "Idea candidate is unrelated to the source input"
+
+
+@pytest.mark.parametrize("recover", [False, True])
+def test_unknown_topic_uses_same_relevance_in_initial_and_recovery(recover):
+    source = (
+        "니트나 맨투맨에 보풀이 생겼을 때 어떻게 관리하면 좋은지 알려주는 글을 써보고 싶다. "
+        "보풀이 생기는 이유와 제거할 때 주의할 점, 집에서 관리할 수 있는 방법을 순서대로 정리하고 싶다."
+    )
+    candidates = [IdeaCandidate(
+        candidate_id=str(i), title=title, perspective=perspective, content_format="가이드",
+        key_question="니트와 맨투맨의 보풀을 어떻게 제거할 수 있을까요?",
+        brief_description="보풀이 생기는 이유와 집에서 관리하는 방법, 제거 시 주의할 점을 안내합니다.",
+    ) for i, (title, perspective) in enumerate([
+        ("보풀이 생긴 니트와 맨투맨, 관리하는 법", "관리 순서"),
+        ("집에서 살펴보는 보풀 발생 원인", "원인 설명"),
+        ("제거하기 전 확인할 보풀 관리 주의점", "주의점 안내"),
+    ], 1)]
+    valid = IdeaExpansionResult(source_input=source, candidates=candidates)
+    initial = valid.model_copy(deep=True)
+    if recover:
+        initial.candidates[0].perspective = "실제 사례 중심"
+        initial.candidates[0].content_format = "경험 공유"
+        assert "invents personal experience" in IdeaGenerator._expansion_candidate_error(source, initial.candidates[0])
+    client = MockLLMClient(response_factory=lambda *_: initial if len(client.calls) == 1 else valid)
+
+    assert IdeaGenerator(llm_client=client).expand(source) == valid
+    assert len(client.calls) == (2 if recover else 1)
+
+
+def test_invalid_source_intent_uses_full_internal_correction_once():
+    source = "안 입는 옷은 버리지 말고 다음 사람에게 다시 쓰이게 하고 싶다."
+    valid_result = _expansion_with_titles(
+        source,
+        [
+            "안 입는 옷을 버리지 않고 다음 쓰임으로 보내기",
+            "안 입는 옷을 버리지 않고 다시 활용하기",
+            "안 입는 옷을 다음 사람에게 보내기",
+        ],
+    )
+    invalid_intent = _source_intent_with_evidence(
+        source,
+        core_action_evidence=["옷장을 비워 새 공간을 만든다"],
+    )
+    valid_intent = _source_intent_with_evidence(source)
+    initial = InternalIdeaExpansion(
+        source_input=source,
+        source_intent=invalid_intent,
+        candidates=valid_result.candidates,
+    )
+    corrected = InternalIdeaExpansion(
+        source_input=source,
+        source_intent=valid_intent,
+        candidates=valid_result.candidates,
+    )
+
+    def response_factory(_prompt, _schema, _payload):
+        return initial if len(client.calls) == 1 else corrected
+
+    client = MockLLMClient(response_factory=response_factory)
+    result = IdeaGenerator(llm_client=client).expand(source)
+
+    assert len(result.candidates) == 3
+    assert [call["schema"] for call in client.calls] == [
+        InternalIdeaExpansion,
+        InternalIdeaExpansion,
+    ]
+    assert "fixed_source_intent" not in client.calls[1]["payload"]
+    assert client.calls[1]["payload"]["correction_mode"] == "source_intent_provenance"
+    assert client.calls[1]["payload"]["source_intent_provenance_issues"]
+
+
+def test_invalid_source_intent_stops_after_one_correction():
+    source = "안 입는 옷은 버리지 말고 다음 사람에게 다시 쓰이게 하고 싶다."
+    result = _expansion_with_titles(
+        source,
+        [
+            "안 입는 옷을 버리지 않고 다음 쓰임으로 보내기",
+            "안 입는 옷을 다시 활용하기",
+            "안 입는 옷을 다음 사람에게 보내기",
+        ],
+    )
+    invalid_intent = _source_intent_with_evidence(
+        source,
+        core_action_evidence=["새로운 옷을 사는 방법"],
+    )
+    response = InternalIdeaExpansion(
+        source_input=source,
+        source_intent=invalid_intent,
+        candidates=result.candidates,
+    )
+    client = MockLLMClient(response_factory=lambda *_args: response)
+
+    with pytest.raises(ValueError, match="provenance"):
+        IdeaGenerator(llm_client=client).expand(source)
+
+    assert len(client.calls) == 2
+    assert all(call["schema"] is InternalIdeaExpansion for call in client.calls)
 
 
 @pytest.mark.parametrize(
@@ -256,6 +533,25 @@ def test_expansion_prompt_avoids_unsupported_details_audience_splitting_and_auth
     assert "what they explain" in prompt
 
 
+def test_expansion_prompt_defines_semantic_hierarchy_and_self_review():
+    prompt = IdeaGenerator(llm_client=MockLLMClient()).expansion_prompt
+
+    assert "core subject" in prompt
+    assert "supporting details" in prompt
+    assert "explicit source details" in prompt
+    assert "different hooks, emphasis, framing" in prompt
+    assert "silently review every" in prompt
+    assert "semantic scope" in prompt
+
+
+def test_expansion_prompt_preserves_core_topic_over_supporting_options():
+    prompt = IdeaGenerator(llm_client=MockLLMClient()).expansion_prompt
+
+    assert "supporting-option" in prompt
+    assert "higher-level action or message" in prompt
+    assert "platform guide" in prompt
+
+
 def _expansion_with_titles(source: str, titles: list[str]) -> IdeaExpansionResult:
     return IdeaExpansionResult(
         source_input=source,
@@ -381,6 +677,257 @@ def test_expansion_validation_allows_informational_comparison_without_personal_e
     assert IdeaGenerator._validate_expansion(source, result, 3) == result
 
 
+def test_expansion_rejects_invented_comparison_for_parallel_reuse_routes():
+    source = "안 입는 옷은 그냥 버리지 말고 팔거나 기부해서 다시 쓰이게 하고 싶다."
+    result = _expansion_with_titles(
+        source,
+        [
+            "안 입는 옷 기부 vs 판매, 어떤 방법이 더 좋을까?",
+            "안 입는 옷 기부와 판매의 장단점",
+            "안 입는 옷의 올바른 선택은 무엇일까?",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="comparison"):
+        IdeaGenerator._validate_expansion(source, result, 3)
+
+
+def test_expansion_allows_parallel_reuse_routes_without_comparison_frame():
+    source = "안 입는 옷은 그냥 버리지 말고 팔거나 기부해서 다시 쓰이게 하고 싶다."
+    result = _expansion_with_titles(
+        source,
+        [
+            "안 입는 옷을 버리지 않고 정리하는 방법",
+            "안 입는 옷을 판매하거나 기부해 다음 쓰임으로 보내기",
+            "여름 끝, 한 번도 안 입은 옷을 버리지 않고 정리하기",
+        ],
+    )
+
+    assert IdeaGenerator._validate_expansion(source, result, 3) == result
+
+
+def test_expansion_preserves_explicit_comparison_source():
+    source = "안 입는 옷을 기부하는 것과 판매하는 것의 장단점을 비교하고 싶다."
+    result = _expansion_with_titles(
+        source,
+        [
+            "옷 기부와 판매의 장단점 비교",
+            "안 입는 옷은 기부와 판매 중 어떤 선택이 더 적절할까?",
+            "안 입는 옷의 기부와 판매 차이 알아보기",
+        ],
+    )
+
+    assert IdeaGenerator._validate_expansion(source, result, 3) == result
+
+
+def test_expansion_does_not_invent_styling_comparison_for_parallel_options():
+    source = "체크셔츠에 슬랙스나 데님을 매치하는 코디를 소개하고 싶다."
+    result = _expansion_with_titles(
+        source,
+        [
+            "체크셔츠에 슬랙스나 데님을 매치하는 코디",
+            "체크셔츠와 함께 활용할 수 있는 출근 코디",
+            "체크셔츠로 완성하는 여러 가지 스타일링",
+        ],
+    )
+
+    assert IdeaGenerator._validate_expansion(source, result, 3) == result
+
+
+def test_expansion_rejects_invented_styling_comparison():
+    source = "체크셔츠에 슬랙스나 데님을 매치하는 코디를 소개하고 싶다."
+    result = _expansion_with_titles(
+        source,
+        [
+            "슬랙스 vs 데님, 체크셔츠에는 무엇이 더 잘 어울릴까?",
+            "체크셔츠 코디 아이디어",
+            "체크셔츠로 완성하는 출근 스타일",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="comparison"):
+        IdeaGenerator._validate_expansion(source, result, 3)
+
+
+def test_realistic_comparison_candidate_is_rejected_from_parallel_source():
+    source = (
+        "늦여름에서 가을로 넘어가면서 반팔을 정리해보려고 한다. "
+        "이번 여름 동안 한 번도 안 입은 옷장 속 악성 재고 같은 반팔들이 있다면 "
+        "이제는 정리해도 되지 않을까? 그렇다고 멀쩡한 옷을 헌옷수거함에 그냥 버리기는 아까우니, "
+        "팔거나 기부하는 등 다음 사람에게 다시 쓰일 수 있도록 처리하는 이야기를 해보고 싶다."
+    )
+    candidate = IdeaCandidate(
+        candidate_id="candidate-3",
+        title="‘악성 재고’를 줄이는 법: 반팔 기부와 재판매의 현실",
+        perspective="비교 분석",
+        content_format="탐색",
+        key_question="반팔을 기부하는 것과 재판매하는 것, 무엇이 더 유익할까?",
+        brief_description=(
+            "옷장 속 반팔을 기부하거나 재판매할 시의 각 방법의 실제 사례와 효과를 분석합니다. "
+            "이를 통해 어떤 방법이 더 나은 선택인지를 탐색합니다."
+        ),
+    )
+
+    error = IdeaGenerator._expansion_candidate_error(source, candidate)
+
+    assert error == "Idea candidate introduced an unsupported comparison direction"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "기부와 재판매, 무엇이 더 유익할까?",
+        "두 방법 중 어느 쪽이 더 적절할까?",
+        "각 방법의 효과를 분석해 더 나은 선택을 찾는다.",
+    ],
+)
+def test_comparison_evaluation_phrases_are_rejected_without_source_comparison(title):
+    source = "안 입는 옷은 팔거나 기부해서 다시 쓰이게 하고 싶다."
+    candidate = IdeaCandidate(
+        candidate_id="candidate-1",
+        title=title,
+        perspective="실용 정보",
+        content_format="가이드",
+        key_question="안 입는 옷을 어떻게 처리할까요?",
+        brief_description="안 입는 옷을 다음 쓰임으로 보내는 방법을 소개합니다.",
+    )
+
+    assert "comparison" in (IdeaGenerator._expansion_candidate_error(source, candidate) or "")
+
+
+def _candidate_for_expansion_check(title: str) -> IdeaCandidate:
+    return IdeaCandidate(
+        candidate_id="candidate-1",
+        title=title,
+        perspective="실용 정보",
+        content_format="가이드",
+        key_question=title,
+        brief_description=title,
+    )
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "안 입는 옷, 버리지 않고 다음 쓰임으로 보내기",
+        "안 입는 옷을 판매하거나 기부해 다시 쓰이게 하는 방법",
+    ],
+)
+def test_expansion_keeps_core_reuse_topic_when_options_are_examples(title):
+    source = "안 입는 옷은 팔거나 기부해서 다시 쓰이게 하고 싶다."
+
+    assert IdeaGenerator._expansion_candidate_error(source, _candidate_for_expansion_check(title)) is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "안 입는 옷 기부하는 방법",
+        "중고 옷 판매 노하우",
+        "중고거래 플랫폼 선택부터 판매 팁까지",
+    ],
+)
+def test_expansion_rejects_supporting_route_promotion(title):
+    source = "안 입는 옷은 팔거나 기부해서 다시 쓰이게 하고 싶다."
+
+    assert "supporting option" in (IdeaGenerator._expansion_candidate_error(
+        source, _candidate_for_expansion_check(title)
+    ) or "")
+
+
+def test_expansion_keeps_core_styling_topic_over_one_styling_option():
+    source = "체크셔츠에 슬랙스나 데님을 매치하는 코디"
+
+    assert IdeaGenerator._expansion_candidate_error(
+        source, _candidate_for_expansion_check("체크셔츠 코디 아이디어")
+    ) is None
+    assert "supporting option" in (IdeaGenerator._expansion_candidate_error(
+        source, _candidate_for_expansion_check("슬랙스 코디 완벽 가이드")
+    ) or "")
+
+
+def test_expansion_keeps_core_exploration_topic_over_channel_recommendation():
+    source = "빈티지샵이나 중고 플랫폼에서 아이템을 찾아보는 이야기"
+
+    assert IdeaGenerator._expansion_candidate_error(
+        source, _candidate_for_expansion_check("빈티지 아이템을 찾아보는 방법")
+    ) is None
+    assert "supporting option" in (IdeaGenerator._expansion_candidate_error(
+        source, _candidate_for_expansion_check("중고 플랫폼 추천 TOP 5")
+    ) or "")
+
+
+@pytest.mark.parametrize(
+    "source,title",
+    [
+        (
+            "안 입는 반팔을 판매하는 방법과 중고거래 플랫폼별 판매 팁을 소개하고 싶다.",
+            "반팔 판매 방법과 중고거래 플랫폼별 판매 팁",
+        ),
+        ("기부할 수 있는 기관과 기부 절차를 소개하고 싶다.", "기부 방법과 절차 안내"),
+    ],
+)
+def test_expansion_allows_explicit_supporting_route_task(source, title):
+    assert IdeaGenerator._expansion_candidate_error(source, _candidate_for_expansion_check(title)) is None
+
+
+def test_expansion_rejects_supporting_route_promotion_in_realistic_shirt_source():
+    source = (
+        "늦여름에서 가을로 넘어가면서 반팔을 정리해보려고 한다. "
+        "이번 여름 동안 한 번도 안 입은 '옷장 속 악성 재고' 같은 반팔들이 있다면 "
+        "이제는 정리해도 되지 않을까? 그렇다고 멀쩡한 옷을 헌옷수거함에 그냥 버리기는 아까우니, "
+        "팔거나 기부하는 등 다음 사람에게 다시 쓰일 수 있도록 처리하는 이야기를 해보고 싶다."
+    )
+    valid_titles = [
+        "여름 끝, 한 번도 안 입은 반팔 정리하기",
+        "옷장 속 악성 재고 반팔, 이제 정리할 때",
+        "안 입는 반팔, 버리지 말고 다음 쓰임으로",
+        "안 입는 반팔을 판매하거나 기부해 다시 쓰이게 하기",
+    ]
+    invalid_titles = [
+        "반팔 티셔츠를 기부하는 방법",
+        "반팔 티셔츠 판매법",
+        "기부 지점과 프로그램 안내",
+        "중고 판매 플랫폼과 판매 팁",
+    ]
+
+    assert all(
+        IdeaGenerator._expansion_candidate_error(source, _candidate_for_expansion_check(title)) is None
+        for title in valid_titles
+    )
+    assert all(
+        "supporting option" in (IdeaGenerator._expansion_candidate_error(
+            source, _candidate_for_expansion_check(title)
+        ) or "")
+        for title in invalid_titles
+    )
+
+
+def test_expansion_rejects_unsupported_expert_authority():
+    source = "안 입는 옷을 정리해서 다음 사람에게 다시 쓰이게 하고 싶다."
+    candidate = _candidate_for_expansion_check("안 입는 옷을 정리하는 방법")
+    candidate = candidate.model_copy(update={"perspective": "전문가 의견"})
+
+    assert IdeaGenerator._expansion_candidate_error(source, candidate) == (
+        "Idea candidate introduced unsupported expert authority"
+    )
+
+
+def test_expansion_rejects_unrequested_environmental_thesis():
+    source = "안 입는 옷은 버리지 말고 다음 사람에게 다시 쓰이게 하고 싶다."
+    result = _expansion_with_titles(
+        source,
+        [
+            "안 입는 옷을 버리지 않고 다음 쓰임으로 보내는 방법",
+            "안 입는 옷을 버리는 대신 다시 사용하는 현실적인 방법",
+            "옷 재활용이 환경에 미치는 영향과 지속가능성",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="environmental"):
+        IdeaGenerator._validate_expansion(source, result, 3)
+
+
 def test_expansion_validation_allows_experience_when_source_explicitly_provides_it():
     source = "내가 빈티지 체크셔츠를 직접 사봤는데 이 경험으로 글 쓰고 싶어"
     result = IdeaExpansionResult(
@@ -485,6 +1032,72 @@ def test_refine_from_source_keeps_unknown_candidate_error():
 
     with pytest.raises(ValueError, match=r"Unknown candidate_id 9; available: 1, 2, 3"):
         refine_from_source("source", 9, generator=generator)
+
+
+def test_refine_selected_candidate_does_not_expand_again():
+    candidate = IdeaCandidate(
+        candidate_id="1",
+        title="선택된 후보",
+        perspective="실용 정보",
+        content_format="가이드",
+        key_question="무엇을 확인할까요?",
+        brief_description="선택된 후보 설명",
+    )
+    expected = BlogIdea(
+        title="선택된 후보",
+        keyword="선택된 후보",
+        search_intent="정보 탐색",
+        angle="실용 정보",
+        rifit_connection="의류 순환",
+        seasonality=0.5,
+        summary="선택된 후보를 구체화합니다.",
+    )
+    generator = Mock()
+    generator.refine.return_value = expected
+
+    result = refine_selected_candidate("source", candidate, generator=generator)
+
+    assert result is expected
+    generator.expand.assert_not_called()
+    generator.refine.assert_called_once_with("source", candidate, "")
+
+
+def test_latest_expansion_round_trip_preserves_selected_candidate(tmp_path):
+    source = "사용자가 입력한 원본"
+    candidate = IdeaCandidate(
+        candidate_id="1",
+        title="동일 candidate",
+        perspective="정보",
+        content_format="가이드",
+        key_question="무엇을 확인할까요?",
+        brief_description="원본에 기반한 설명",
+    )
+    expansion = IdeaExpansionResult(source_input=source, candidates=[candidate])
+    path = tmp_path / "latest_expansion.json"
+
+    save_latest_expansion(expansion, path)
+    restored = load_latest_expansion(source, path)
+
+    assert select_candidate(restored, 1) == candidate
+
+
+def test_latest_expansion_rejects_source_mismatch_without_regeneration(tmp_path):
+    expansion = IdeaExpansionResult(
+        source_input="source-a",
+        candidates=[IdeaCandidate(
+            candidate_id="1",
+            title="후보",
+            perspective="정보",
+            content_format="가이드",
+            key_question="질문",
+            brief_description="설명",
+        )],
+    )
+    path = tmp_path / "latest_expansion.json"
+    save_latest_expansion(expansion, path)
+
+    with pytest.raises(ValueError, match="Latest expansion source does not match"):
+        load_latest_expansion("source-b", path)
 
 
 def _refinement_candidate(perspective: str) -> IdeaCandidate:
@@ -623,6 +1236,55 @@ def test_refinement_prefers_explicit_source_perspective_over_candidate_label():
     assert IdeaGenerator._validate_refinement(source, candidate, idea, "") == idea
 
 
+def test_refinement_generalizes_unsupported_candidate_question_detail_to_source_scope():
+    source = "인턴일기: 오슬로에서 산 빈티지 체크셔츠로 출근 코디를 해봤다."
+    candidate = IdeaCandidate(
+        candidate_id="candidate-1",
+        title="인턴 출근룩: 오슬로 빈티지 체크셔츠 스타일링",
+        perspective="출근 코디 경험",
+        content_format="경험 후기",
+        key_question="빈티지 체크셔츠를 어떻게 아우터로 활용할 수 있을까?",
+        brief_description="체크셔츠를 출근 코디에 활용하는 경험을 정리합니다.",
+    )
+    idea = _refined_idea(
+        title="인턴 출근룩: 오슬로 빈티지 체크셔츠 스타일링",
+        keyword="빈티지 체크셔츠 출근 코디",
+        angle="출근 코디 경험 관점에서 빈티지 체크셔츠를 활용하는 방법을 정리합니다.",
+        summary="오슬로에서 산 빈티지 체크셔츠를 출근 코디에 활용한 경험을 소개합니다.",
+        content_format="경험 후기",
+        content_perspective="출근 코디 경험",
+        key_question="빈티지 체크셔츠를 인턴 출근룩에 어떻게 활용할 수 있을까?",
+        outline=["오슬로에서 산 체크셔츠", "출근 코디로 입어본 경험", "일반적인 코디 제안"],
+    )
+
+    assert IdeaGenerator._validate_refinement(source, candidate, idea, "") == idea
+
+
+def test_refinement_still_rejects_candidate_question_with_no_source_anchor():
+    source = "인턴일기: 체크셔츠로 출근 코디를 직접 해봤다."
+    candidate = IdeaCandidate(
+        candidate_id="candidate-1",
+        title="체크셔츠 출근 코디 경험",
+        perspective="출근 코디 경험",
+        content_format="경험 후기",
+        key_question="회사 분위기에 맞는 비즈니스 캐주얼은 무엇일까?",
+        brief_description="체크셔츠를 출근 코디에 활용한 경험을 정리합니다.",
+    )
+    idea = _refined_idea(
+        title="인턴 출근 코디 경험",
+        keyword="인턴 출근 코디",
+        angle="출근 코디 경험을 정리합니다.",
+        summary="체크셔츠를 출근 코디에 활용한 경험을 소개합니다.",
+        content_format="경험 후기",
+        content_perspective="출근 코디 경험",
+        key_question="체크셔츠를 출근 코디에 어떻게 활용할 수 있을까?",
+        outline=["체크셔츠 경험", "출근 코디", "코디 제안"],
+    )
+
+    with pytest.raises(ValueError, match="candidate question"):
+        IdeaGenerator._validate_refinement(source, candidate, idea, "")
+
+
 def test_refinement_perspective_uses_candidate_when_source_is_ambiguous():
     source = "가을 옷 주제로 써보고 싶다."
     assert not IdeaGenerator._preserves_refinement_perspective(
@@ -749,6 +1411,16 @@ def test_refinement_prompt_preserves_source_actions_and_content_format():
     assert "do not turn it into a broad history or trend analysis" in prompt
     assert "keep shopping, selection, and styling as the actions" in prompt
     assert "do not replace them with DIY" in prompt
+
+
+def test_refinement_prompt_treats_source_as_authority_over_candidate_narrowing():
+    prompt = " ".join(IdeaGenerator(llm_client=MockLLMClient()).refinement_prompt.split())
+
+    assert "raw source as the highest-authority semantic and factual contract" in prompt
+    assert "candidate-only narrowing" in prompt
+    assert "generalize that detail back" in prompt
+    assert "Candidate questions are useful entry points" in prompt
+    assert "Every outline item must remain within the raw source's" in prompt
 
 
 def test_refinement_prompt_preserves_trend_opinion_contrast_instead_of_new_guide():
@@ -1003,6 +1675,10 @@ def test_expansion_retries_fabricated_experience_once():
     assert len(client.calls) == 2
     assert "correction_feedback" in client.calls[1]["payload"]
     assert "Do not invent personal experience" in client.calls[1]["payload"]["correction_feedback"]
+    feedback = client.calls[1]["payload"]["correction_feedback"]
+    assert "raw source" in feedback
+    assert "not an instruction to choose a different topic" in feedback
+    assert "self-review" in feedback
 
 
 def test_validation_failure_after_one_correction_retry_still_raises():
@@ -1026,6 +1702,220 @@ def test_validation_failure_after_one_correction_retry_still_raises():
         IdeaGenerator(llm_client=client).expand(source)
 
     assert len(client.calls) == 2
+
+
+def test_expansion_recovery_preserves_valid_candidates_and_replaces_invalid_slot():
+    source = "안 입는 옷은 그냥 버리지 말고 팔거나 기부해서 다시 쓰이게 하고 싶다."
+    valid = _expansion_with_titles(
+        source,
+        [
+            "안 입는 옷을 버리지 않고 정리하는 방법",
+            "안 입는 옷을 판매하거나 기부해 다음 쓰임으로 보내기",
+            "여름 끝, 안 입는 옷을 버리지 않고 정리하기",
+        ],
+    )
+    initial = IdeaExpansionResult.model_validate(valid.model_dump(mode="json"))
+    initial.candidates[0] = initial.candidates[0].model_copy(
+        update={"title": "안 입는 옷을 버리지 말고 기부 vs 판매, 어떤 게 더 좋을까?"}
+    )
+
+    def response_factory(_prompt, _schema, _payload):
+        return initial if len(client.calls) == 1 else valid
+
+    client = MockLLMClient(response_factory=response_factory)
+    result = IdeaGenerator(llm_client=client).expand(source)
+
+    assert len(client.calls) == 2
+    assert [candidate.candidate_id for candidate in result.candidates] == ["candidate-1", "candidate-2", "candidate-3"]
+    assert result.candidates[1:] == valid.candidates[1:]
+    assert result.candidates[0].title == valid.candidates[0].title
+    assert "invalid_candidates" in client.calls[1]["payload"]
+    assert client.calls[1]["payload"]["invalid_candidates"][0]["category"] == "unsupported_comparison"
+
+
+def test_expansion_recovery_replaces_unrequested_environmental_slot():
+    source = "안 입는 옷은 버리지 말고 다음 사람에게 다시 쓰이게 하고 싶다."
+    valid = _expansion_with_titles(
+        source,
+        [
+            "안 입는 옷을 버리지 않고 다음 쓰임으로 보내는 방법",
+            "안 입는 옷을 버리는 대신 다시 사용하는 방법",
+            "안 입는 옷을 버리지 않고 다음 사람에게 보내는 과정",
+        ],
+    )
+    initial = IdeaExpansionResult.model_validate(valid.model_dump(mode="json"))
+    initial.candidates[2] = initial.candidates[2].model_copy(
+        update={"title": "버릴 옷 재활용이 환경에 미치는 영향과 지속가능성"}
+    )
+
+    def response_factory(_prompt, _schema, _payload):
+        return initial if len(client.calls) == 1 else valid
+
+    client = MockLLMClient(response_factory=response_factory)
+    result = IdeaGenerator(llm_client=client).expand(source)
+
+    assert len(client.calls) == 2
+    assert result.candidates == valid.candidates
+    assert client.calls[1]["payload"]["invalid_candidates"][0]["category"] == "unsupported_environmental_direction"
+
+
+def _multi_slot_recovery_fixture(source: str):
+    valid = _expansion_with_titles(
+        source,
+        [
+            "안 입는 옷을 버리지 않고 정리하는 방법",
+            "안 입는 옷을 판매하거나 기부해 다음 쓰임으로 보내기",
+            "여름 끝, 안 입는 옷을 버리지 않고 정리하기",
+        ],
+    )
+    initial = IdeaExpansionResult.model_validate(valid.model_dump(mode="json"))
+    initial.candidates[1] = initial.candidates[1].model_copy(
+        update={
+            "title": "안 입는 옷 기부와 판매, 무엇이 더 좋을까?",
+            "perspective": "비교 분석",
+            "content_format": "비교",
+        }
+    )
+    initial.candidates[2] = initial.candidates[2].model_copy(
+        update={
+            "title": "안 입는 옷 기부하는 방법",
+            "perspective": "기부 방법 안내",
+            "content_format": "가이드",
+        }
+    )
+    return valid, initial
+
+
+def test_multi_slot_recovery_preserves_valid_candidate_and_passes_context_to_correction():
+    source = "안 입는 옷은 그냥 버리지 말고 팔거나 기부해서 다시 쓰이게 하고 싶다."
+    valid, initial = _multi_slot_recovery_fixture(source)
+
+    def response_factory(_prompt, _schema, _payload):
+        return initial if len(client.calls) == 1 else valid
+
+    client = MockLLMClient(response_factory=response_factory)
+    result = IdeaGenerator(llm_client=client).expand(source)
+
+    assert result == valid
+    assert len(client.calls) == 2
+    payload = client.calls[1]["payload"]
+    assert [candidate["candidate_id"] for candidate in payload["preserved_candidates"]] == ["candidate-1"]
+    assert [item["candidate_id"] for item in payload["invalid_candidates"]] == ["candidate-2", "candidate-3"]
+    assert "distinct replacement" in payload["correction_feedback"]
+
+
+def test_multi_slot_recovery_rejects_exact_duplicate_correction_before_merge():
+    source = "안 입는 옷은 그냥 버리지 말고 팔거나 기부해서 다시 쓰이게 하고 싶다."
+    valid, initial = _multi_slot_recovery_fixture(source)
+    duplicate = IdeaExpansionResult.model_validate(valid.model_dump(mode="json"))
+    duplicate.candidates[2] = duplicate.candidates[1].model_copy(update={"candidate_id": "candidate-3"})
+
+    def response_factory(_prompt, _schema, _payload):
+        return initial if len(client.calls) == 1 else duplicate
+
+    client = MockLLMClient(response_factory=response_factory)
+    with pytest.raises(ValueError, match="duplicate titles"):
+        IdeaGenerator(llm_client=client).expand(source)
+
+    assert len(client.calls) == 2
+
+
+def test_multi_slot_recovery_rejects_duplicate_correction_id_before_merge():
+    source = "안 입는 옷은 그냥 버리지 말고 팔거나 기부해서 다시 쓰이게 하고 싶다."
+    valid, initial = _multi_slot_recovery_fixture(source)
+    duplicate_id = IdeaExpansionResult.model_validate(valid.model_dump(mode="json"))
+    duplicate_id.candidates[2] = duplicate_id.candidates[2].model_copy(update={"candidate_id": "candidate-2"})
+
+    def response_factory(_prompt, _schema, _payload):
+        return initial if len(client.calls) == 1 else duplicate_id
+
+    client = MockLLMClient(response_factory=response_factory)
+    with pytest.raises(ValueError, match="duplicate candidate_id"):
+        IdeaGenerator(llm_client=client).expand(source)
+
+    assert len(client.calls) == 2
+
+
+def test_multi_slot_recovery_is_not_tied_to_clothing_disposal_vocabulary():
+    source = "체크셔츠에 슬랙스나 데님을 매치하는 코디를 소개하고 싶다."
+    valid = _expansion_with_titles(
+        source,
+        [
+            "체크셔츠 코디 아이디어",
+            "체크셔츠와 출근룩 스타일링",
+            "체크셔츠 레이어드 코디",
+        ],
+    )
+    initial = IdeaExpansionResult.model_validate(valid.model_dump(mode="json"))
+    for index in (1, 2):
+        initial.candidates[index] = initial.candidates[index].model_copy(
+            update={
+                "title": "체크셔츠를 직접 입어본 후기",
+                "perspective": "개인 경험 공유",
+                "content_format": "후기",
+                "brief_description": "직접 입어본 경험을 공유합니다.",
+            }
+        )
+
+    def response_factory(_prompt, _schema, _payload):
+        return initial if len(client.calls) == 1 else valid
+
+    client = MockLLMClient(response_factory=response_factory)
+    result = IdeaGenerator(llm_client=client).expand(source)
+
+    assert result == valid
+    assert len(client.calls) == 2
+
+
+@pytest.mark.parametrize(
+    ("category", "invalid_update"),
+    [
+        (
+            "unsupported_authority",
+            {
+                "perspective": "전문가 의견",
+                "content_format": "전문가 분석",
+                "key_question": "전문가가 추천하는 방법은 무엇일까요?",
+                "brief_description": "전문가의 분석과 추천을 정리합니다.",
+            },
+        ),
+        (
+            "unsupported_supporting_option",
+            {
+                "title": "안 입는 옷 기부하는 방법",
+                "key_question": "안 입는 옷을 기부하는 방법은 무엇일까요?",
+                "brief_description": "기부 절차와 방법을 정리합니다.",
+            },
+        ),
+    ],
+)
+def test_expansion_recovery_reanchors_authority_and_supporting_option_failures(category, invalid_update):
+    source = "안 입는 옷은 그냥 버리지 말고 팔거나 기부해서 다시 쓰이게 하고 싶다."
+    valid = _expansion_with_titles(
+        source,
+        [
+            "안 입는 옷을 버리지 않고 정리하는 방법",
+            "안 입는 옷을 판매하거나 기부해 다음 쓰임으로 보내기",
+            "여름 끝, 안 입는 옷을 버리지 않고 정리하기",
+        ],
+    )
+    initial = IdeaExpansionResult.model_validate(valid.model_dump(mode="json"))
+    initial.candidates[0] = initial.candidates[0].model_copy(update=invalid_update)
+
+    def response_factory(_prompt, _schema, _payload):
+        return initial if len(client.calls) == 1 else valid
+
+    client = MockLLMClient(response_factory=response_factory)
+    result = IdeaGenerator(llm_client=client).expand(source)
+
+    assert result == valid
+    assert len(client.calls) == 2
+    assert client.calls[1]["payload"]["invalid_candidates"][0]["category"] == category
+    feedback = client.calls[1]["payload"]["correction_feedback"]
+    assert "raw source" in feedback
+    assert "semantic scope" in feedback
+    assert "self-review" in feedback
+    assert "replace only the invalid slots" in feedback
 
 
 def test_valid_expansion_does_not_trigger_correction_retry():

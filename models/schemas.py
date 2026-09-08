@@ -69,6 +69,29 @@ class IdeaCandidate(RIFITBaseModel):
     brief_description: str
 
 
+class SourceIntent(RIFITBaseModel):
+    """Positive semantic anchor used only during idea expansion."""
+
+    core_subject: str
+    core_subject_evidence: List[str] = Field(default_factory=list)
+    core_action_or_message: str
+    core_action_evidence: List[str] = Field(default_factory=list)
+    core_question_or_claim: str
+    core_question_evidence: List[str] = Field(default_factory=list)
+    explicit_source_details: List[str] = Field(default_factory=list)
+    detail_evidence: List[str] = Field(default_factory=list)
+    explicit_contrasts: List[str] = Field(default_factory=list)
+    contrast_evidence: List[str] = Field(default_factory=list)
+
+
+class InternalIdeaExpansion(RIFITBaseModel):
+    """LLM response model; SourceIntent is intentionally not public output."""
+
+    source_input: str
+    source_intent: SourceIntent
+    candidates: List[IdeaCandidate]
+
+
 class IdeaExpansionResult(RIFITBaseModel):
     source_input: str
     candidates: List[IdeaCandidate]

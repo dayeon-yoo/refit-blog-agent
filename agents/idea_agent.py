@@ -7,7 +7,13 @@ from typing import List, Optional, Set
 
 from llm.client import LLMClient, get_llm_client
 from config.settings import get_settings
-from models.schemas import BlogIdea, IdeaCandidate, IdeaExpansionResult
+from models.schemas import (
+    BlogIdea,
+    IdeaCandidate,
+    IdeaExpansionResult,
+    InternalIdeaExpansion,
+    SourceIntent,
+)
 import math
 
 
@@ -27,11 +33,12 @@ def _jaccard(a: Set[str], b: Set[str]) -> float:
 class IdeaGenerator:
     _MAX_CORRECTION_RETRIES = 1
     _CONCEPT_GROUPS = {
-        "clothing": ("옷", "의류", "의복", "의상", "헌옷", "셔츠", "패션", "아이템"),
-        "discard": ("버리", "폐기", "처분", "버릴"),
+        "clothing": ("옷", "의류", "의복", "의상", "헌옷", "반팔", "셔츠", "패션", "아이템"),
+        "discard": ("버리", "폐기", "처분", "버릴", "정리"),
         "donation": ("기부", "나눔"),
+        "sale": ("판매", "팔거나", "팔아", "팔기", "팔아서", "팔고", "중고거래"),
         "collection": ("수거", "수거함", "의류수거함"),
-        "reuse": ("재사용", "재활용", "리폼", "업사이클링", "다시 입"),
+        "reuse": ("재사용", "재활용", "리폼", "업사이클링", "다시 입", "다시 쓰", "다음 쓰임", "쓰이게", "보내"),
         "vintage": ("빈티지", "세컨드핸드", "중고"),
         "shopping": ("쇼핑", "구매", "고르", "찾기"),
         "color_trend": ("코어", "색", "컬러"),
@@ -72,10 +79,84 @@ class IdeaGenerator:
         "experience": _EXPERIENCE_SOURCE_SIGNALS,
         "shopping": ("쇼핑", "찾아보", "찾기", "구매", "고르", "새 옷 말고"),
         "styling": ("코디", "스타일링", "출근룩", "입어"),
-        "comparison": ("장단점", "비교", "무엇이 더", "vs", "차이점"),
+        "comparison": ("장단점", "비교", "무엇이 더", "어떤 방법이 더", "어떤 선택이 더", "올바른 선택", "vs", "차이"),
         "guide": ("방법", "팁", "체크리스트", "가이드"),
     }
     _DIY_ACTION_SIGNALS = ("업사이클링", "리폼", "diy", "커팅", "패치워크")
+    _EDITORIAL_EXPANSION_SIGNALS = (
+        "환경",
+        "친환경",
+        "지속가능",
+        "순환경제",
+        "탄소 배출",
+        "패션 산업",
+        "소비 윤리",
+    )
+    _UNSUPPORTED_AUTHORITY_SIGNALS = ("전문가 의견", "전문가 추천", "전문가 관점", "전문가 분석")
+    _SOURCE_TASK_SIGNALS = (
+        "방법",
+        "팁",
+        "체크리스트",
+        "가이드",
+        "절차",
+        "프로그램",
+        "기관",
+        "플랫폼별",
+        "노하우",
+        "추천",
+    )
+    _CORE_ACTION_SIGNALS = (
+        "정리",
+        "다시 쓰",
+        "다시 활용",
+        "처리",
+        "매치",
+        "찾아보",
+        "찾기",
+        "보내",
+        "활용",
+    )
+    _TASK_EXPANSION_SIGNALS = (
+        "방법",
+        "노하우",
+        "팁",
+        "추천",
+        "지점",
+        "프로그램",
+        "플랫폼",
+        "단계별",
+        "절차",
+        "준비물",
+        "주의할 점",
+        "완벽 가이드",
+    )
+    _COMPARISON_FRAME_SIGNALS = (
+        "비교 분석",
+        "비교형",
+        "장단점",
+        "차이점",
+        "무엇이 더",
+        "어떤 게 더",
+        "어느 게 더",
+        "어떤 것이 더",
+        "어느 것이 더",
+        "뭐가 더",
+        "어떤 방법이 더",
+        "어느 방법이 더",
+        "어떤 선택이 더",
+        "더 유익",
+        "더 적절",
+        "더 좋은",
+        "더 나은",
+        "최선의 선택",
+        "각 방법의 효과",
+        "각 방법의 장단점",
+        "각 선택지를 분석",
+        "두 방법을 분석",
+        "어느 쪽",
+        "선택지를 비교",
+        " vs ",
+    )
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.client = llm_client or get_llm_client()
@@ -123,6 +204,58 @@ class IdeaGenerator:
         return any(signal in text for signal in cls._EXPERIENCE_CANDIDATE_SIGNALS)
 
     @classmethod
+    def _alternative_terms(cls, source: str) -> List[str]:
+        """Extract option phrases joined by a source-level alternative marker."""
+        terms: List[str] = []
+        pattern = re.compile(r"([가-힣A-Za-z0-9]+?)(?:거나|또는|이나|나)(?=\s)(?:\s+)([가-힣A-Za-z0-9]+)")
+        for match in pattern.finditer((source or "").lower()):
+            terms.extend(match.groups())
+        normalized_terms: List[str] = []
+        for term in terms:
+            normalized_terms.extend(cls._source_terms(term) or {term})
+        return [term for term in normalized_terms if term]
+
+    @classmethod
+    def _source_has_explicit_task(cls, source: str) -> bool:
+        normalized = (source or "").lower()
+        return any(signal in normalized for signal in cls._SOURCE_TASK_SIGNALS)
+
+    @classmethod
+    def _has_task_expansion(cls, text: str) -> bool:
+        normalized = (text or "").lower()
+        return any(signal in normalized for signal in cls._TASK_EXPANSION_SIGNALS) or bool(
+            re.search(r"[가-힣]{2,}법", normalized)
+        )
+
+    @classmethod
+    def _promotes_supporting_option(cls, source: str, candidate: IdeaCandidate) -> bool:
+        """Reject a route-specific task when the source only lists that route."""
+        option_terms = cls._alternative_terms(source)
+        if len(option_terms) < 2 or cls._source_has_explicit_task(source):
+            return False
+
+        candidate_text = " ".join(
+            (candidate.title, candidate.perspective, candidate.content_format,
+             candidate.key_question, candidate.brief_description)
+        ).lower()
+        compact_candidate = re.sub(r"\s+", "", candidate_text)
+        option_hits = [term for term in option_terms if re.sub(r"\s+", "", term) in compact_candidate]
+        route_family_names = {"sale", "donation", "collection", "shopping", "vintage", "styling"}
+        route_families = cls._concept_groups(source) & route_family_names
+        candidate_route_families = cls._concept_groups(candidate_text)
+        family_hits = route_families & candidate_route_families
+        has_single_option = len(set(option_hits)) == 1
+        has_single_route = len(route_families) >= 2 and len(family_hits) == 1
+        if not (has_single_option or has_single_route):
+            return False
+        if not cls._has_task_expansion(candidate_text):
+            return False
+
+        source_actions = [signal for signal in cls._CORE_ACTION_SIGNALS if signal in source.lower()]
+        candidate_actions = [signal for signal in source_actions if signal in candidate_text]
+        return not candidate_actions
+
+    @classmethod
     def _preserves_core_concepts(cls, source: str, candidate: str) -> bool:
         source_groups = cls._concept_groups(source)
         candidate_groups = cls._concept_groups(candidate)
@@ -130,11 +263,15 @@ class IdeaGenerator:
             # Preserve the main semantic relation, while allowing a title to
             # omit incidental context such as a city name.
             required = 2 if len(source_groups) >= 2 else 1
-            return len(source_groups & candidate_groups) >= required
+            if len(source_groups & candidate_groups) >= required:
+                return True
 
         source_terms = cls._source_terms(source)
         candidate_text = re.sub(r"\s+", "", (candidate or "").lower())
-        return bool(source_terms and any(term in candidate_text for term in source_terms))
+        # A failed concept match must not hide direct evidence for an unknown topic.
+        # Require multiple terms on this additional path, not one incidental word.
+        matches = sum(term in candidate_text for term in source_terms)
+        return matches >= (2 if source_groups else 1)
 
     @classmethod
     def _preserves_perspective(cls, perspective: str, output: str) -> bool:
@@ -208,7 +345,7 @@ class IdeaGenerator:
             families.add("styling")
         if any(signal in normalized for signal in ("방법", "팁", "체크리스트", "가이드")):
             families.add("guide")
-        if any(signal in normalized for signal in ("장단점", "비교", "무엇이 더", "vs", "차이점")):
+        if any(signal in normalized for signal in ("장단점", "비교", "무엇이 더", "어떤 방법이 더", "어떤 선택이 더", "올바른 선택", "vs", "차이")):
             families.add("comparison")
         if any(signal in normalized for signal in ("유행", "트렌드", "다시 돌아온")):
             families.add("trend")
@@ -216,6 +353,55 @@ class IdeaGenerator:
             families.add("editorial")
 
         return families
+
+    @staticmethod
+    def _source_intent_provenance_issues(
+        source: str, intent: SourceIntent
+    ) -> List[str]:
+        """Check only that declared SourceIntent evidence exists in the raw source."""
+        required = (
+            ("core_subject", intent.core_subject, intent.core_subject_evidence),
+            ("core_action_or_message", intent.core_action_or_message, intent.core_action_evidence),
+            ("core_question_or_claim", intent.core_question_or_claim, intent.core_question_evidence),
+        )
+        optional = (
+            ("explicit_source_details", intent.explicit_source_details, intent.detail_evidence),
+            ("explicit_contrasts", intent.explicit_contrasts, intent.contrast_evidence),
+        )
+        issues: List[str] = []
+        for field, value, evidence in required:
+            if value.strip() and not evidence:
+                issues.append(f"{field} has no raw-source evidence")
+            for span in evidence:
+                if span and span not in source:
+                    issues.append(f"{field} evidence is not a raw-source substring: {span!r}")
+        for field, values, evidence in optional:
+            if values and not evidence:
+                issues.append(f"{field} has no raw-source evidence")
+            for span in evidence:
+                if span and span not in source:
+                    issues.append(f"{field} evidence is not a raw-source substring: {span!r}")
+        return issues
+
+    @classmethod
+    def _core_source_intent_provenance_issues(
+        cls, source: str, intent: SourceIntent
+    ) -> List[str]:
+        core_fields = {"core_subject", "core_action_or_message", "core_question_or_claim"}
+        return [
+            issue for issue in cls._source_intent_provenance_issues(source, intent)
+            if issue.split(" ", 1)[0] in core_fields
+        ]
+
+    @classmethod
+    def _validate_source_intent_provenance(
+        cls, source: str, intent: SourceIntent
+    ) -> None:
+        issues = cls._core_source_intent_provenance_issues(source, intent)
+        if issues:
+            raise ValueError(
+                "Idea SourceIntent provenance is invalid: " + "; ".join(issues)
+            )
 
     @classmethod
     def _preserves_refinement_format(cls, source: str, candidate_format: str, output: str) -> bool:
@@ -266,6 +452,40 @@ class IdeaGenerator:
             elif family not in output_families:
                 return False
         return True
+
+    @classmethod
+    def _preserves_candidate_question(
+        cls, source: str, candidate_question: str, output: str
+    ) -> bool:
+        """Preserve source-supported question anchors, not unsupported narrowing."""
+        question = (candidate_question or "").strip().lower()
+        output_text = (output or "").lower()
+        if not question:
+            return False
+        if question in output_text:
+            return True
+
+        source_terms = cls._source_terms(source)
+        question_terms = cls._source_terms(question)
+        supported_terms = {
+            term
+            for term in question_terms
+            if any(term in source_term or source_term in term for source_term in source_terms)
+        }
+        compact_output = re.sub(r"\s+", "", output_text)
+        term_hits = sum(
+            1
+            for term in supported_terms
+            if re.sub(r"\s+", "", term) in compact_output
+        )
+        if supported_terms and term_hits >= min(2, len(supported_terms)):
+            return True
+
+        # Concept groups cover natural paraphrases while remaining anchored to
+        # the raw source. They do not authorize candidate-only details.
+        supported_groups = cls._concept_groups(source) & cls._concept_groups(question)
+        output_groups = cls._concept_groups(output_text)
+        return bool(supported_groups) and supported_groups.issubset(output_groups)
 
     @classmethod
     def _preserves_experience_direction(cls, output: str) -> bool:
@@ -331,17 +551,256 @@ class IdeaGenerator:
         )
 
     @classmethod
+    def _expansion_candidate_error(cls, source_input: str, candidate: IdeaCandidate) -> Optional[str]:
+        fields = (
+            candidate.title,
+            candidate.perspective,
+            candidate.content_format,
+            candidate.key_question,
+            candidate.brief_description,
+        )
+        if any(not field.strip() for field in fields):
+            return "Idea candidate contains an empty required field"
+        if not cls._has_explicit_experience(source_input) and cls._has_unsupported_experience_claim(fields):
+            return "Idea candidate invents personal experience not stated in the source input"
+
+        compact_source = re.sub(r"[^가-힣A-Za-z0-9]", "", source_input.lower())
+        compact_title = re.sub(r"[^가-힣A-Za-z0-9]", "", candidate.title.lower())
+        if len(compact_source) >= 12 and compact_source in compact_title:
+            return "Idea candidate copied the full source input into its title"
+
+        candidate_content = " ".join(fields)
+        source_direction = cls._source_direction_families(source_input)
+        if "comparison" not in source_direction and cls._has_explicit_comparison_frame(candidate):
+            return "Idea candidate introduced an unsupported comparison direction"
+        if cls._promotes_supporting_option(source_input, candidate):
+            return "Idea candidate promoted a supporting option into the main topic"
+
+        source_text = source_input.lower()
+        if (
+            not any(signal in source_text for signal in cls._EDITORIAL_EXPANSION_SIGNALS)
+            and any(signal in candidate_content.lower() for signal in cls._EDITORIAL_EXPANSION_SIGNALS)
+        ):
+            return "Idea candidate introduced an unsupported environmental direction"
+        if (
+            not any(signal in source_input.lower() for signal in cls._UNSUPPORTED_AUTHORITY_SIGNALS)
+            and any(signal in candidate_content.lower() for signal in cls._UNSUPPORTED_AUTHORITY_SIGNALS)
+        ):
+            return "Idea candidate introduced unsupported expert authority"
+        if not cls._preserves_core_concepts(source_input, candidate_content):
+            return "Idea candidate is unrelated to the source input"
+        return None
+
+    @classmethod
+    def _has_explicit_comparison_frame(cls, candidate: IdeaCandidate) -> bool:
+        """Detect comparison intent without treating every parallel option as comparison."""
+        title = candidate.title.lower()
+        question = candidate.key_question.lower()
+        brief = candidate.brief_description.lower()
+        perspective = candidate.perspective.lower()
+        content_format = candidate.content_format.lower()
+
+        if any(signal in title for signal in cls._COMPARISON_FRAME_SIGNALS):
+            return True
+        if any(signal in brief for signal in cls._COMPARISON_FRAME_SIGNALS):
+            return True
+        if any(signal in question for signal in cls._COMPARISON_FRAME_SIGNALS):
+            # Ignore the generic template used by some generations when it
+            # does not name or evaluate concrete alternatives.
+            if "다른 선택지와 비교하면 무엇이 다를까" not in question:
+                return True
+        if any(signal in perspective for signal in ("비교 분석", "비교형", "장단점", "차이점")):
+            return True
+        if any(signal in content_format for signal in ("비교 분석", "비교형", "장단점", "차이점")):
+            return True
+        # A comparison format alone is not enough: generic Mock/template
+        # titles can contain grammatical "과"/"와" without naming options.
+        # Require separated alternatives or an explicit vs expression.
+        if "비교" in content_format and (
+            " vs " in title or re.search(r"\s(?:와|과)\s", title)
+        ):
+            return True
+        return False
+
+    @classmethod
+    def _invalid_expansion_candidates(
+        cls, source_input: str, candidates: List[IdeaCandidate]
+    ) -> List[tuple[IdeaCandidate, str]]:
+        invalid = []
+        for candidate in candidates:
+            error = cls._expansion_candidate_error(source_input, candidate)
+            if error:
+                invalid.append((candidate, error))
+        return invalid
+
+    @classmethod
+    def _merge_expansion_recovery(
+        cls,
+        source_input: str,
+        preserved: List[IdeaCandidate],
+        invalid: List[IdeaCandidate],
+        correction: IdeaExpansionResult,
+        slot_order: List[str],
+    ) -> IdeaExpansionResult:
+        """Keep valid first-pass candidates and fill only invalid ID slots."""
+        merged = list(preserved)
+        used_ids = {candidate.candidate_id for candidate in merged}
+        correction_by_id = {candidate.candidate_id: candidate for candidate in correction.candidates}
+        correction_candidates = [
+            candidate
+            for candidate in correction.candidates
+            if candidate.candidate_id not in used_ids
+            and cls._expansion_candidate_error(source_input, candidate) is None
+        ]
+        for invalid_candidate in invalid:
+            replacement = next(
+                (
+                    candidate for candidate in correction_candidates
+                    if candidate.candidate_id == invalid_candidate.candidate_id
+                ),
+                None,
+            )
+            if replacement is None and correction_candidates:
+                replacement = correction_candidates[0]
+            if replacement is not None:
+                correction_candidates.remove(replacement)
+                merged.append(replacement.model_copy(update={"candidate_id": invalid_candidate.candidate_id}))
+                if get_settings().debug:
+                    print(
+                        "[Idea Expansion Recovery Mapping] "
+                        f"slot={invalid_candidate.candidate_id} "
+                        f"replacement={replacement.candidate_id} title={replacement.title!r}",
+                        file=sys.stderr,
+                    )
+            else:
+                # Keep the failed slot in the validation input so the caller
+                # receives the real candidate error, not a misleading count error.
+                merged.append(correction_by_id.get(invalid_candidate.candidate_id, invalid_candidate))
+        by_id = {candidate.candidate_id: candidate for candidate in merged}
+        ordered = [by_id[candidate_id] for candidate_id in slot_order if candidate_id in by_id]
+        if get_settings().debug:
+            print(
+                "[Idea Expansion Merged Candidates] "
+                + repr([candidate.model_dump(mode="json") for candidate in ordered]),
+                file=sys.stderr,
+            )
+        return IdeaExpansionResult(source_input=source_input, candidates=ordered)
+
+    @staticmethod
+    def _recovery_structural_error(
+        correction: IdeaExpansionResult,
+        invalid: List[IdeaCandidate],
+    ) -> Optional[str]:
+        """Check only unambiguous recovery-shape errors before semantic validation."""
+        candidates = correction.candidates
+        ids = [candidate.candidate_id for candidate in candidates]
+        if len(ids) != len(set(ids)):
+            return "Idea recovery correction contains duplicate candidate_id"
+        if len(candidates) < len(invalid):
+            return "Idea recovery correction returned fewer replacements than invalid slots"
+
+        invalid_ids = {candidate.candidate_id for candidate in invalid}
+        missing_ids = invalid_ids - set(ids)
+        if missing_ids:
+            return (
+                "Idea recovery correction omitted invalid slot candidate_id(s): "
+                + ", ".join(sorted(missing_ids))
+            )
+
+        titles = [" ".join(candidate.title.lower().split()) for candidate in candidates]
+        if len(titles) != len(set(titles)):
+            return "Idea recovery correction contains duplicate titles"
+
+        contents = [
+            tuple(
+                value
+                for field, value in candidate.model_dump(mode="json").items()
+                if field != "candidate_id"
+            )
+            for candidate in candidates
+        ]
+        if len(contents) != len(set(contents)):
+            return "Idea recovery correction contains duplicate candidate content"
+        return None
+
+    @staticmethod
+    def _expansion_error_category(error: str) -> str:
+        if "comparison" in error:
+            return "unsupported_comparison"
+        if "supporting option" in error:
+            return "unsupported_supporting_option"
+        if "environmental" in error:
+            return "unsupported_environmental_direction"
+        if "expert authority" in error:
+            return "unsupported_authority"
+        if "personal experience" in error:
+            return "fabricated_experience"
+        if "unrelated" in error:
+            return "unrelated_source"
+        return "candidate_validation"
+
+    @classmethod
+    def _expansion_candidate_feedback(
+        cls, invalid: List[tuple[IdeaCandidate, str]]
+    ) -> str:
+        details = "\n".join(
+            f"- candidate_id={candidate.candidate_id}, title={candidate.title!r}, "
+            f"category={cls._expansion_error_category(error)}, reason={error}"
+            for candidate, error in invalid
+        )
+        experience_rule = " Do not invent personal experience unless the source explicitly states it."
+        if not any(category == "fabricated_experience" for category in (cls._expansion_error_category(error) for _, error in invalid)):
+            experience_rule = ""
+        recovery_contract = (
+            "Re-read the raw source in the payload before writing any replacement. The raw source "
+            "is the authority for the core subject, action, observation, question, claim, contrast, "
+            "and desired direction. The validation reason below identifies what to remove; it is "
+            "not an instruction to choose a different topic. Restore the replacement inside the "
+            "source's semantic scope, and do not evade one violation by inventing another direction. "
+            "Preserve valid candidates and IDs exactly, replace only the invalid slots, and silently "
+            "self-review each replacement for core-intent preservation, unsupported expansion, and "
+            "duplication before returning the structured result. If multiple slots are invalid, "
+            "return one distinct replacement for each invalid slot with its exact candidate_id. Use different "
+            "hooks, emphasis, framing, questions, or entry points without inventing a new topic. "
+            "The preserved candidates are reference points, not candidates to modify."
+        )
+        return recovery_contract + experience_rule + "\n" + details
+
+    @classmethod
     def _expansion_correction_feedback(cls, source: str, error: ValueError) -> str:
         message = str(error)
+        recovery_contract = (
+            "Re-read the raw source as the only authority for the core subject, action, observation, "
+            "question, claim, contrast, and desired direction. The validation failure is a reason to "
+            "remove a framing, not a request to replace it with another topic. Return candidates "
+            "inside the source's semantic scope, then silently self-review each candidate for source "
+            "core preservation, unsupported expansion, and duplication before returning JSON. For "
+            "multiple invalid slots, return one distinct replacement per slot with the exact slot "
+            "candidate_id; vary presentation rather than inventing a new topic. "
+        )
         if "invent" in message.lower() or cls._has_explicit_experience(source):
-            return (
-                "The previous candidates violated validation. Do not invent personal experience "
-                "unless the source explicitly states it. Keep only the user's stated topic, actions, "
-                "and questions, and return distinct candidates."
+            return recovery_contract + (
+                "Do not invent personal experience unless the source explicitly states it. Keep only "
+                "the user's stated topic, actions, and questions, and return distinct candidates."
             )
+        return recovery_contract + (
+            "Preserve the source's core topic and content direction, avoid unrelated expansions, "
+            "and return distinct candidates."
+        )
+
+    @staticmethod
+    def _source_intent_provenance_feedback(issues: List[str]) -> str:
+        details = "\n".join(f"- {issue}" for issue in issues)
         return (
-            "The previous candidates violated validation. Preserve the source's core topic and "
-            "content direction, avoid unrelated expansions, and return distinct candidates."
+            "The previous SourceIntent was not accepted because its declared evidence "
+            "was not grounded in raw_source. Re-read raw_source first and return the "
+            "full InternalIdeaExpansion again. Every non-empty evidence item must be "
+            "an exact contiguous substring copied from raw_source; never write a "
+            "summary, paraphrase, inferred purpose, benefit, or new background as "
+            "evidence. Rebuild the semantic interpretation from those spans, keep "
+            "parallel routes and question roles unchanged, and then regenerate "
+            "candidates inside that corrected SourceIntent.\n"
+            "Provenance issues:\n" + details
         )
 
     @classmethod
@@ -374,35 +833,20 @@ class IdeaGenerator:
         if not 3 <= len(result.candidates) <= 5 or len(result.candidates) != expected:
             raise ValueError("Idea expansion must return the requested 3 to 5 candidates")
 
-        compact_source = re.sub(r"[^가-힣A-Za-z0-9]", "", source_input.lower())
         titles: Set[str] = set()
         token_sets: List[Set[str]] = []
         perspective_formats: Set[tuple[str, str]] = set()
+        invalid = cls._invalid_expansion_candidates(source_input, result.candidates)
+        if invalid:
+            raise ValueError(invalid[0][1])
         for candidate in result.candidates:
-            fields = (
-                candidate.title,
-                candidate.perspective,
-                candidate.content_format,
-                candidate.key_question,
-                candidate.brief_description,
-            )
-            if any(not field.strip() for field in fields):
-                raise ValueError("Idea candidate contains an empty required field")
-            if not cls._has_explicit_experience(source_input) and cls._has_unsupported_experience_claim(fields):
-                raise ValueError("Idea candidate invents personal experience not stated in the source input")
             if candidate.candidate_id in {item.candidate_id for item in result.candidates if item is not candidate}:
                 raise ValueError("Idea expansion contains duplicate candidate_id")
             normalized_title = " ".join(candidate.title.lower().split())
-            compact_title = re.sub(r"[^가-힣A-Za-z0-9]", "", candidate.title.lower())
-            if len(compact_source) >= 12 and compact_source in compact_title:
-                raise ValueError("Idea candidate copied the full source input into its title")
             if normalized_title in titles:
                 raise ValueError("Idea expansion contains duplicate titles")
             titles.add(normalized_title)
             tokens = _tokens(candidate.title)
-            candidate_content = " ".join((candidate.title, candidate.key_question, candidate.brief_description))
-            if not cls._preserves_core_concepts(source_input, candidate_content):
-                raise ValueError("Idea candidate is unrelated to the source input")
             if any(_jaccard(tokens, previous) > 0.8 for previous in token_sets):
                 raise ValueError("Idea expansion contains overly similar titles")
             token_sets.append(tokens)
@@ -426,8 +870,81 @@ class IdeaGenerator:
             },
         }
         prompt = self.expansion_prompt
+        preserved_candidates: List[IdeaCandidate] = []
+        invalid_candidates: List[IdeaCandidate] = []
+        initial_candidate_order: List[str] = []
+        source_intent: SourceIntent | None = None
+        source_intent_needs_correction = False
+        source_intent_provenance_issues: List[str] = []
         for attempt in range(self._MAX_CORRECTION_RETRIES + 1):
-            result = self.client.generate_structured(prompt, IdeaExpansionResult, payload)
+            if attempt == 0:
+                internal_result = self.client.generate_structured(
+                    prompt, InternalIdeaExpansion, payload
+                )
+                source_intent = internal_result.source_intent
+                result = IdeaExpansionResult(
+                    source_input=internal_result.source_input,
+                    candidates=internal_result.candidates,
+                )
+                if get_settings().debug:
+                    print(
+                        "[Idea Expansion Source Intent]\n"
+                        f"source={source_input!r}\n"
+                        f"intent={source_intent.model_dump(mode='json')!r}",
+                        file=sys.stderr,
+                    )
+                    print(
+                        "[Idea Expansion Initial Candidates] "
+                        + repr([candidate.model_dump(mode="json") for candidate in result.candidates]),
+                        file=sys.stderr,
+                    )
+            else:
+                if source_intent is None:  # pragma: no cover - guarded by the first attempt
+                    raise RuntimeError("SourceIntent is missing for expansion recovery")
+                if source_intent_needs_correction:
+                    recovery_payload = {
+                        **payload,
+                        "correction_mode": "source_intent_provenance",
+                        "previous_source_intent": source_intent.model_dump(mode="json"),
+                        "source_intent_provenance_issues": source_intent_provenance_issues,
+                        "previous_candidates": [
+                            candidate.model_dump(mode="json")
+                            for candidate in preserved_candidates
+                        ],
+                    }
+                    if get_settings().debug:
+                        print(
+                            "[Idea Expansion Source Intent Correction] "
+                            + repr(source_intent_provenance_issues),
+                            file=sys.stderr,
+                        )
+                    internal_result = self.client.generate_structured(
+                        prompt, InternalIdeaExpansion, recovery_payload
+                    )
+                    source_intent = internal_result.source_intent
+                    result = IdeaExpansionResult(
+                        source_input=internal_result.source_input,
+                        candidates=internal_result.candidates,
+                    )
+                else:
+                    recovery_payload = {
+                        **payload,
+                        "fixed_source_intent": source_intent.model_dump(mode="json"),
+                    }
+                    if get_settings().debug:
+                        print(
+                            "[Idea Expansion Recovery Fixed Intent] "
+                            + repr(source_intent.model_dump(mode="json")),
+                            file=sys.stderr,
+                        )
+                        print(
+                            "[Idea Expansion Preserved Candidates] "
+                            + repr([candidate.model_dump(mode="json") for candidate in preserved_candidates]),
+                            file=sys.stderr,
+                        )
+                    result = self.client.generate_structured(
+                        prompt, IdeaExpansionResult, recovery_payload
+                    )
             try:
                 returned_source = result.source_input
                 if returned_source != source_input:
@@ -441,6 +958,41 @@ class IdeaGenerator:
                     # source_input is provenance, not generated content. Keep
                     # the application-owned raw source while validating ideas.
                     result.source_input = source_input
+                source_intent_provenance_issues = self._source_intent_provenance_issues(source_input, source_intent)
+                core_provenance_issues = self._core_source_intent_provenance_issues(source_input, source_intent)
+                optional_issues = [
+                    issue for issue in source_intent_provenance_issues
+                    if issue not in core_provenance_issues
+                ]
+                if optional_issues and get_settings().debug:
+                    print(
+                        "[Idea Expansion Optional Provenance] " + repr(optional_issues),
+                        file=sys.stderr,
+                    )
+                if core_provenance_issues:
+                    raise ValueError(
+                        "Idea SourceIntent provenance is invalid: "
+                        + "; ".join(core_provenance_issues)
+                    )
+                if attempt and not source_intent_needs_correction and preserved_candidates and invalid_candidates:
+                    if get_settings().debug:
+                        print(
+                            "[Idea Expansion Raw Correction Candidates] "
+                            + repr([candidate.model_dump(mode="json") for candidate in result.candidates]),
+                            file=sys.stderr,
+                        )
+                    structural_error = self._recovery_structural_error(
+                        result, invalid_candidates
+                    )
+                    if structural_error:
+                        raise ValueError(structural_error)
+                    result = self._merge_expansion_recovery(
+                        source_input,
+                        preserved_candidates,
+                        invalid_candidates,
+                        result,
+                        initial_candidate_order,
+                    )
                 return self._validate_expansion(source_input, result, expected)
             except ValueError as error:
                 if get_settings().debug:
@@ -451,10 +1003,66 @@ class IdeaGenerator:
                         + repr([candidate.model_dump(mode="json") for candidate in result.candidates]),
                         file=sys.stderr,
                     )
+                    for candidate, candidate_error in self._invalid_expansion_candidates(source_input, result.candidates):
+                        print(
+                            "candidate_id="
+                            f"{candidate.candidate_id} title={candidate.title!r} "
+                            f"category={self._expansion_error_category(candidate_error)} "
+                            f"reason={candidate_error}",
+                            file=sys.stderr,
+                        )
                 if attempt >= self._MAX_CORRECTION_RETRIES:
                     raise
-                feedback = self._expansion_correction_feedback(source_input, error)
+                invalid = self._invalid_expansion_candidates(source_input, result.candidates)
+                source_intent_provenance_issues = self._source_intent_provenance_issues(source_input, source_intent)
+                core_provenance_issues = self._core_source_intent_provenance_issues(source_input, source_intent)
+                if core_provenance_issues:
+                    source_intent_needs_correction = True
+                    preserved_candidates = list(result.candidates)
+                    invalid_candidates = []
+                    initial_candidate_order = []
+                    feedback = self._source_intent_provenance_feedback(
+                        core_provenance_issues
+                    )
+                elif invalid:
+                    if get_settings().debug:
+                        print(
+                            "[Idea Expansion Initial Invalid Slots] "
+                            + repr([
+                                {
+                                    "candidate_id": candidate.candidate_id,
+                                    "reason": reason,
+                                }
+                                for candidate, reason in invalid
+                            ]),
+                            file=sys.stderr,
+                        )
+                    preserved_candidates = [
+                        candidate for candidate in result.candidates
+                        if all(candidate is not invalid_candidate for invalid_candidate, _ in invalid)
+                    ]
+                    invalid_candidates = [candidate for candidate, _ in invalid]
+                    initial_candidate_order = [candidate.candidate_id for candidate in result.candidates]
+                    feedback = self._expansion_candidate_feedback(invalid)
+                else:
+                    feedback = self._expansion_correction_feedback(source_input, error)
                 payload = {**payload, "correction_feedback": feedback}
+                if invalid:
+                    payload["preserved_candidates"] = [
+                        candidate.model_dump(mode="json") for candidate in preserved_candidates
+                    ]
+                    payload["invalid_candidates"] = [
+                        {
+                            "candidate_id": candidate.candidate_id,
+                            "title": candidate.title,
+                            "reason": reason,
+                            "category": self._expansion_error_category(reason),
+                        }
+                        for candidate, reason in invalid
+                    ]
+                if source_intent_needs_correction:
+                    payload["previous_source_intent"] = source_intent.model_dump(mode="json")
+                    payload["source_intent_provenance_issues"] = source_intent_provenance_issues
                 prompt = f"{self.expansion_prompt}\n\nCorrection feedback:\n{feedback}"
 
     @classmethod
@@ -504,8 +1112,11 @@ class IdeaGenerator:
                 f"candidate={candidate.content_format!r}, "
                 f"refined={idea.content_format!r}"
             )
-        if candidate.key_question.strip().lower() not in output:
-            raise ValueError("Refined BlogIdea does not preserve the candidate question")
+        if not cls._preserves_candidate_question(source_input, candidate.key_question, output):
+            raise ValueError(
+                "Refined BlogIdea does not preserve the candidate question: "
+                f"candidate={candidate.key_question!r}, refined={idea.key_question!r}"
+            )
         if len(idea.outline or []) < 3:
             raise ValueError("Refined BlogIdea requires a concrete outline")
         if any(term in output for term in ("seo", "검색 의도", "fit_score", "metadata", "prompt", "agent")):
