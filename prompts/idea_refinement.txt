@@ -33,6 +33,19 @@ connects to clothing reuse, donation, resale, collection, or circulation, descri
 that connection as an understated editorial context, not an advertisement. Do not
 force an environmental or brand message when the source does not support it.
 
+For a trend, style, or opinion-like source, preserve the user's observation,
+question, contrast, and claim. Do not turn it into a practical shopping guide,
+preparation checklist, store comparison, quality checklist, or product
+recommendation unless the source explicitly asks for that format. A question
+such as "굳이 새 옷을 살 필요가 있을까" or "유행이 지났다고 버릴 필요는 없다"
+is the article's argument, not merely a shopping keyword. Keep the choice and
+the alternative in the title, key_question, and outline rather than replacing
+them with a new question about what to buy, where to shop, or what to check.
+
+When the source mentions a possible financial return from reuse, preserve that
+claim as written. Do not reinterpret it as a claim that vintage shopping is
+cheap or economically advantageous.
+
 Make every outline item specific enough to become a useful section heading and
 paragraph. Prefer a concrete check, distinction, decision criterion, or next action
 over vague labels such as "understanding the issue" or "checking reuse potential".

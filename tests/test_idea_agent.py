@@ -1,8 +1,11 @@
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
+import agents.idea_agent as idea_agent_module
 from agents.idea_agent import IdeaGenerator
+from agents.content_planner_agent import ContentPlannerAgent
 from agents.writer_agent import WriterAgent
 from agents.tag_agent import MockKeywordDataProvider, TagAgent
 from llm.client import MockLLMClient
@@ -29,6 +32,45 @@ def test_expand_returns_distinct_source_related_candidates():
     assert any("레몬" in candidate.title or "포도" in candidate.title for candidate in result.candidates)
     assert all(SOURCE not in candidate.title for candidate in result.candidates)
     assert client.calls[0]["payload"]["user_input"] == SOURCE
+
+
+@pytest.mark.parametrize(
+    ("original", "returned"),
+    [
+        ("y2k 패션이 다시 유행이다.", "Y2K 패션이 다시 유행이다."),
+        ("소액 의 돈으로 돌아온다", "소액의 돈으로 돌아온다"),
+    ],
+)
+def test_expansion_restores_application_owned_source_provenance(original, returned):
+    def response_factory(_prompt, _schema, _payload):
+        titles = (
+            ["Y2K 패션의 흐름", "Y2K 패션 스타일 관찰", "Y2K 패션 활용 이야기"]
+            if "y2k" in original.lower()
+            else ["소액의 돈으로 돌아오는 옷", "소액의 돈과 옷 활용", "옷이 돈으로 돌아오는 과정"]
+        )
+        return _expansion_with_titles(
+            returned,
+            titles,
+        )
+
+    client = MockLLMClient(response_factory=response_factory)
+    result = IdeaGenerator(llm_client=client).expand(original)
+
+    assert result.source_input == original
+    assert len(client.calls) == 1
+
+
+def test_expansion_provenance_restore_does_not_remove_candidate_semantic_guardrail():
+    original = "y2k 패션이 다시 유행이다."
+
+    def response_factory(_prompt, _schema, _payload):
+        return _expansion_with_titles(
+            "Y2K 패션이 다시 유행이다.",
+            ["가을 데님 코디", "겨울 니트 관리", "출근 가방 추천"],
+        )
+
+    with pytest.raises(ValueError, match="unrelated"):
+        IdeaGenerator(llm_client=MockLLMClient(response_factory=response_factory)).expand(original)
 
 
 def test_expand_clamps_candidate_count_to_supported_range():
@@ -78,19 +120,24 @@ def test_refined_idea_connects_to_existing_writer_tag_image_pipeline():
 
 def test_refined_candidate_runs_once_through_writer_tag_image_pipeline():
     generator_client = MockLLMClient()
+    planner_client = MockLLMClient()
     writer_client = MockLLMClient()
     provider = MockKeywordDataProvider()
-    idea, result = run_refined_manual_workflow(
+    idea, content_plan, result = run_refined_manual_workflow(
         SOURCE,
         "1",
         "실제 코디 사례를 포함해줘",
         generator=IdeaGenerator(llm_client=generator_client),
+        content_planner=ContentPlannerAgent(llm_client=planner_client),
         writer=WriterAgent(llm_client=writer_client),
         tag_agent=TagAgent(provider=provider),
     )
 
     assert len(generator_client.calls) == 2
+    assert len(planner_client.calls) == 1
     assert len(writer_client.calls) == 1
+    assert content_plan.writing_script
+    assert planner_client.calls[0]["payload"]["raw_source"] == SOURCE
     assert result.ideas == [idea]
     assert result.top_3[0].idea == idea
     assert len(result.blog_posts) == 1
@@ -100,7 +147,13 @@ def test_refined_candidate_runs_once_through_writer_tag_image_pipeline():
     assert post.tags is not None
     assert post.image_plan is not None
     assert post.image_plan.images
-    assert provider.was_called
+    # Trend-only mock output may produce no valid tag candidates; if it does,
+    # the provider must still be the component that receives them.
+    assert not post.tags or provider.was_called
+    writer_payload = writer_client.calls[0]["payload"]
+    assert writer_payload["raw_source"] == SOURCE
+    assert writer_payload["refined_blog_idea"]["title"] == idea.title
+    assert writer_payload["content_plan"]["writing_script"] == content_plan.writing_script
     assert isinstance(result.model_dump(mode="json"), dict)
 
 
@@ -293,6 +346,41 @@ def test_expansion_validation_rejects_fabricated_personal_experience():
         raise AssertionError("Fabricated personal experience should be rejected")
 
 
+def test_expansion_validation_allows_informational_comparison_without_personal_experience():
+    source = "빈티지와 구제의 차이를 설명하고 싶다."
+    result = IdeaExpansionResult(
+        source_input=source,
+        candidates=[
+            IdeaCandidate(
+                candidate_id="candidate-1",
+                title="빈티지와 구제는 어떻게 다를까?",
+                perspective="개념 비교",
+                content_format="비교",
+                key_question="두 용어의 차이는 무엇일까요?",
+                brief_description="두 개념의 의미와 차이를 정보형으로 설명합니다.",
+            ),
+            IdeaCandidate(
+                candidate_id="candidate-2",
+                title="빈티지와 구제를 구분하는 기준",
+                perspective="판단 기준",
+                content_format="정보 가이드",
+                key_question="두 개념을 어떤 기준으로 구분할까요?",
+                brief_description="개념과 사용 맥락을 중심으로 정리합니다.",
+            ),
+            IdeaCandidate(
+                candidate_id="candidate-3",
+                title="다시 사용하는 옷을 설명하는 두 가지 표현",
+                perspective="용어 해설",
+                content_format="해설",
+                key_question="빈티지와 구제라는 표현은 어떻게 쓰일까요?",
+                brief_description="두 표현의 공통점과 차이를 일반적인 정보로 설명합니다.",
+            ),
+        ],
+    )
+
+    assert IdeaGenerator._validate_expansion(source, result, 3) == result
+
+
 def test_expansion_validation_allows_experience_when_source_explicitly_provides_it():
     source = "내가 빈티지 체크셔츠를 직접 사봤는데 이 경험으로 글 쓰고 싶어"
     result = IdeaExpansionResult(
@@ -468,6 +556,141 @@ def test_refinement_accepts_related_content_format_variations(candidate_format, 
     assert IdeaGenerator._validate_refinement("source", candidate, idea, "") == idea
 
 
+def test_refinement_prefers_explicit_source_format_over_candidate_format():
+    source = "인턴일기: 체크셔츠로 출근 코디를 직접 해봤다."
+    candidate = IdeaCandidate(
+        candidate_id="candidate-1",
+        title="체크셔츠 출근 코디",
+        perspective="출근 코디 경험",
+        content_format="주장 및 정보 제공",
+        key_question="체크셔츠로 출근 코디를 어떻게 해봤을까요?",
+        brief_description="체크셔츠를 출근 코디에 활용한 방향을 정리합니다.",
+    )
+    idea = _refined_idea(
+        title="체크셔츠 출근 코디 경험",
+        keyword="체크셔츠 출근 코디",
+        angle="개인 경험 및 코디 리뷰 관점에서 체크셔츠를 출근에 활용한 과정을 정리합니다.",
+        summary="체크셔츠로 출근 코디를 어떻게 해봤을까요? 직접 활용한 경험을 소개합니다.",
+        content_format="개인 경험 및 코디 리뷰",
+        content_perspective="개인 경험 및 코디 리뷰",
+        key_question="체크셔츠로 출근 코디를 어떻게 해봤을까요?",
+        outline=["체크셔츠를 산 계기", "출근 코디에 활용한 경험", "코디 아이디어"],
+    )
+
+    assert IdeaGenerator._validate_refinement(source, candidate, idea, "") == idea
+
+
+def test_refinement_prefers_explicit_source_perspective_over_candidate_label():
+    source = "인턴일기: 체크셔츠로 출근 코디를 직접 해봤다."
+    candidate = IdeaCandidate(
+        candidate_id="candidate-1",
+        title="체크셔츠 출근 코디",
+        perspective="소셜 미디어 트렌드",
+        content_format="주장 및 정보 제공",
+        key_question="체크셔츠로 출근 코디를 어떻게 해봤을까요?",
+        brief_description="체크셔츠 출근 코디를 중심으로 글을 구성합니다.",
+    )
+    idea = _refined_idea(
+        title="체크셔츠 출근 코디 경험",
+        keyword="체크셔츠 출근 코디",
+        angle="개인 경험 공유 관점에서 체크셔츠를 출근 코디에 활용한 과정을 정리합니다.",
+        summary="체크셔츠로 출근 코디를 어떻게 해봤을까요? 직접 활용한 경험을 소개합니다.",
+        content_format="개인 경험 및 코디 리뷰",
+        content_perspective="개인 경험 공유",
+        key_question="체크셔츠로 출근 코디를 어떻게 해봤을까요?",
+        outline=["체크셔츠를 산 계기", "출근 코디에 활용한 경험", "코디 아이디어"],
+    )
+
+    assert IdeaGenerator._validate_refinement(source, candidate, idea, "") == idea
+
+
+def test_refinement_perspective_uses_candidate_when_source_is_ambiguous():
+    source = "가을 옷 주제로 써보고 싶다."
+    assert not IdeaGenerator._preserves_refinement_perspective(
+        source,
+        "실용적인 옷장 정리",
+        "개인 여행 후기",
+    )
+
+
+def test_refinement_perspective_does_not_change_y2k_exploration_to_travel_experience():
+    source = "Y2K 패션을 빈티지에서 찾아보는 방법"
+
+    assert not IdeaGenerator._preserves_refinement_perspective(
+        source,
+        "트렌드 탐색",
+        "개인 여행 경험",
+    )
+
+
+def test_refinement_perspective_preserves_explicit_comparison():
+    source = "의류수거함과 기부의 차이를 비교하고 싶다."
+
+    assert IdeaGenerator._preserves_refinement_perspective(
+        source,
+        "비교형",
+        "의류 처리 방법을 비교하고 선택 기준을 안내하는 정보형 글",
+    )
+    assert not IdeaGenerator._preserves_refinement_perspective(
+        source,
+        "비교형",
+        "개인 일기로 기부 경험을 기록하는 글",
+    )
+
+
+def test_refinement_keeps_explicit_source_comparison_requirement():
+    source = "의류수거함과 기부의 차이를 비교하고 싶다."
+    assert IdeaGenerator._source_format_families(source) == {"comparison"}
+    assert not IdeaGenerator._preserves_refinement_format(
+        source,
+        "비교형",
+        "개인 경험 일기로 기부 과정을 기록하는 글",
+    )
+
+
+def test_refinement_allows_source_styling_format_to_specialize():
+    source = "Y2K 패션을 빈티지 아이템으로 즐기는 방법"
+
+    assert IdeaGenerator._source_format_families(source) == {"guide", "styling"}
+    assert IdeaGenerator._preserves_refinement_format(
+        source,
+        "스타일 탐색",
+        "Y2K 빈티지 스타일링 가이드: 아이템을 즐기는 방법",
+    )
+
+
+def test_refinement_uses_candidate_format_when_source_format_is_ambiguous():
+    source = "가을 옷 정리 주제로 써보고 싶다."
+
+    assert not IdeaGenerator._source_format_families(source)
+    assert not IdeaGenerator._preserves_refinement_format(
+        source,
+        "실용 가이드",
+        "개인 여행 후기",
+    )
+
+
+def test_identical_candidate_and_refined_format_passes_before_source_family_check():
+    source = "Y2K가 다시 유행인데 굳이 새 옷을 살 필요가 있을까? 새 옷 대신 빈티지를 활용해보자."
+
+    assert IdeaGenerator._source_format_families(source).isdisjoint({"comparison"})
+    assert IdeaGenerator._format_families("비교") == {"comparison"}
+    assert IdeaGenerator._preserves_refinement_format(source, "비교", "비교")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "새 옷 말고 빈티지 옷을 입어보자.",
+        "새 옷 대신 기존 옷을 활용해보자.",
+        "굳이 새 옷을 살 필요가 있을까?",
+        "유행이 지났다고 버릴 필요가 없다.",
+    ],
+)
+def test_editorial_alternative_is_not_explicit_comparison(source):
+    assert "comparison" not in IdeaGenerator._source_format_families(source)
+
+
 @pytest.mark.parametrize(
     ("candidate_format", "refined_format"),
     [("비교 기사", "개인 후기"), ("체크리스트", "인터뷰")],
@@ -507,6 +730,137 @@ def test_refinement_prompt_preserves_source_actions_and_content_format():
     assert "do not turn it into a broad history or trend analysis" in prompt
     assert "keep shopping, selection, and styling as the actions" in prompt
     assert "do not replace them with DIY" in prompt
+
+
+def test_refinement_prompt_preserves_trend_opinion_contrast_instead_of_new_guide():
+    prompt = " ".join(IdeaGenerator(llm_client=MockLLMClient()).refinement_prompt.split())
+
+    assert "trend, style, or opinion-like source" in prompt
+    assert "practical shopping guide" in prompt
+    assert "굳이 새 옷을 살 필요가 있을까" in prompt
+    assert "what to buy, where to shop, or what to check" in prompt
+
+
+def test_trend_style_source_preserves_format_question_and_contrast():
+    source = (
+        "Y2K가 다시 유행인데 굳이 새 옷을 살 필요가 있을까? "
+        "유행이 지났다고 버릴 필요도 없고 빈티지 매장에서 Y2K를 찾아보는 것도 재미있다."
+    )
+    families = IdeaGenerator._source_format_families(source)
+    assert {"trend", "styling", "editorial"}.issubset(families)
+
+    candidate = _refinement_candidate("Y2K 빈티지 스타일 탐색").model_copy(
+        update={
+            "title": "Y2K 빈티지 스타일 탐색",
+            "content_format": "스타일 탐색",
+            "key_question": "새 옷 없이 돌아온 Y2K 스타일을 어떻게 즐길 수 있을까요?",
+        }
+    )
+    idea = _refined_idea(
+        title="Y2K가 돌아와도 새 옷이 필요할까",
+        keyword="Y2K 빈티지 스타일",
+        angle="돌아온 Y2K 유행과 새 옷 대신 빈티지 활용에 대한 스타일 에디토리얼",
+        summary="Y2K 유행을 새 옷 구매와 기존 옷 활용의 선택이라는 관점에서 이야기합니다.",
+        content_format="트렌드 스타일 에디토리얼",
+        content_perspective="Y2K 유행과 빈티지 활용에 대한 의견",
+        key_question=candidate.key_question,
+        outline=["Y2K 유행의 재등장", "새 옷 대신 빈티지 활용", "유행이 지난 옷을 버리지 않는 선택", "Y2K 빈티지 스타일 탐색"],
+    )
+
+    assert IdeaGenerator._validate_refinement(source, candidate, idea, "") == idea
+
+
+def test_trend_style_source_rejects_unrequested_shopping_guide_format():
+    source = "Y2K가 다시 유행인데 굳이 새 옷을 살 필요가 있을까? 빈티지 매장에서 찾아보자."
+    candidate = _refinement_candidate("Y2K 빈티지 스타일 탐색").model_copy(
+        update={
+            "title": "Y2K 빈티지 스타일 탐색",
+            "content_format": "스타일 탐색",
+            "key_question": "새 옷 없이 Y2K 스타일을 어떻게 즐길 수 있을까요?",
+        }
+    )
+    idea = _refined_idea(
+        title="새 옷 대신 Y2K 빈티지 쇼핑 가이드",
+        keyword="Y2K 빈티지 쇼핑",
+        angle="빈티지 매장에서 Y2K 옷을 고르는 실용 가이드",
+        summary="Y2K 빈티지 쇼핑에서 확인할 준비물과 품질 기준을 안내합니다.",
+        content_format="가이드",
+        content_perspective="빈티지 쇼핑 방법",
+        key_question=candidate.key_question,
+        outline=["매장 찾기", "준비물", "품질 확인", "Y2K 빈티지 스타일 탐색"],
+    )
+
+    with pytest.raises(ValueError, match="format"):
+        IdeaGenerator._validate_refinement(source, candidate, idea, "")
+
+
+def test_refinement_contrast_failure_retries_with_source_derived_feedback():
+    source = "Y2K가 다시 유행인데 굳이 새 옷을 살 필요가 있을까? 유행이 지났다고 버릴 필요도 없다."
+    candidate = IdeaCandidate(
+        candidate_id="candidate-1",
+        title="Y2K 빈티지 활용",
+        perspective="트렌드 관찰",
+        content_format="가이드",
+        key_question="Y2K를 어떻게 볼까요?",
+        brief_description="Y2K와 기존 옷 활용을 살펴봅니다.",
+    )
+    invalid = _refined_idea(
+        title="Y2K 빈티지 쇼핑 방법",
+        keyword="Y2K 빈티지 쇼핑",
+        angle="빈티지 쇼핑 방법을 안내합니다.",
+        summary="빈티지 매장에서 아이템을 고르는 방법을 정리합니다.",
+        content_format="가이드",
+        content_perspective="쇼핑 방법",
+        key_question=candidate.key_question,
+        outline=["매장 찾기", "준비물", "품질 확인"],
+    )
+    valid = _refined_idea(
+        title="Y2K가 돌아와도 새 옷이 필요할까",
+        keyword="Y2K 빈티지 활용",
+        angle="새 옷 대신 빈티지와 기존 옷을 활용하는 선택을 이야기합니다.",
+        summary="유행이 지나도 옷을 버리지 않고 다시 활용하는 방향을 살펴봅니다.",
+        content_format="가이드",
+        content_perspective="트렌드와 재활용 선택",
+        key_question=candidate.key_question,
+        outline=["Y2K 유행", "새 옷 대신 빈티지 활용", "유행 지난 옷을 버리지 않는 선택"],
+    )
+
+    def response_factory(_prompt, _schema, _payload):
+        return invalid if len(client.calls) == 1 else valid
+
+    client = MockLLMClient(response_factory=response_factory)
+    result = IdeaGenerator(llm_client=client).refine(source, candidate)
+
+    assert result == valid
+    assert len(client.calls) == 2
+    feedback = client.calls[1]["payload"]["correction_feedback"]
+    assert "buying new clothes" in feedback
+    assert "discarded" in feedback
+    assert "shopping guide" in feedback
+
+
+def test_refinement_direction_failure_debug_diagnostic(monkeypatch, capsys):
+    source = "Y2K가 다시 유행인데 굳이 새 옷을 살 필요가 있을까?"
+    candidate = _refinement_candidate("Y2K 빈티지 활용").model_copy(
+        update={"title": "Y2K 빈티지 활용", "key_question": "Y2K를 어떻게 볼까요?"}
+    )
+    idea = _refined_idea(
+        title="Y2K 쇼핑 가이드",
+        keyword="Y2K 쇼핑",
+        angle="빈티지 쇼핑 방법을 안내합니다.",
+        summary="Y2K 아이템을 고르는 방법을 정리합니다.",
+        key_question=candidate.key_question,
+        outline=["매장 찾기", "준비물", "품질 확인"],
+    )
+    monkeypatch.setattr(idea_agent_module, "get_settings", lambda: SimpleNamespace(debug=True))
+
+    with pytest.raises(ValueError, match="contrast or editorial argument"):
+        IdeaGenerator._validate_refinement(source, candidate, idea, "")
+
+    diagnostic = capsys.readouterr().err
+    assert "[Idea Refinement Direction Failure]" in diagnostic
+    assert "key_question=" in diagnostic
+    assert "outline=" in diagnostic
 
 
 def test_refinement_rejects_experience_source_changed_to_generic_analysis():

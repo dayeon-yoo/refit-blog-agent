@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
+from types import SimpleNamespace
 
+import agents.writer_agent as writer_agent_module
 from agents.writer_agent import WriterAgent
 from llm.client import MockLLMClient
-from models.schemas import BlogIdea, BlogPost, ScoredIdea
+from models.schemas import BlogIdea, BlogPost, ContentPlan, ScoredIdea
 
 
 def make_idea(title: str, keyword: str, angle: str, summary: str = "") -> ScoredIdea:
@@ -124,11 +126,14 @@ def test_summary_is_passed_to_writer_prompt_payload():
     summary = "겨울 니트를 형태가 무너지지 않게 접어서 보관하는 방법을 안내합니다."
     writer.write(make_idea("겨울 니트 보관법", "니트 보관", "니트의 형태를 지키는 보관 방법", summary))
 
-    assert client.calls[0]["payload"]["summary"] == summary
-    assert client.calls[0]["payload"]["content_contract"]["summary"] == summary
+    payload = client.calls[0]["payload"]
+    assert payload["summary"] != summary
+    assert payload["summary"]
+    assert "summary" not in payload["editorial_context"]
+    assert "summary" not in payload["content_contract"]
 
 
-def test_writer_receives_refinement_planning_fields_as_content_contract():
+def test_writer_content_contract_uses_only_safe_editorial_fields():
     client = MockLLMClient()
     writer = WriterAgent(client)
     scored = make_idea(
@@ -148,9 +153,39 @@ def test_writer_receives_refinement_planning_fields_as_content_contract():
     writer.write(scored)
     payload = client.calls[0]["payload"]
 
-    assert payload["content_contract"]["outline"] == scored.idea.outline
-    assert payload["content_contract"]["key_question"] == scored.idea.key_question
-    assert payload["content_contract"]["content_perspective"] == scored.idea.content_perspective
+    assert payload["content_contract"]["title"] == scored.idea.title
+    assert payload["content_contract"]["keyword"] == scored.idea.keyword
+    assert payload["content_contract"]["content_format"] == scored.idea.content_format
+    assert "search_intent" not in payload["content_contract"]
+    assert "key_question" not in payload["content_contract"]
+    assert "content_perspective" not in payload["content_contract"]
+    assert "outline" not in payload["content_contract"]
+    assert "angle" not in payload["editorial_context"]
+    assert "summary" not in payload["editorial_context"]
+
+
+def test_writer_payload_keeps_raw_source_separate_from_safe_editorial_context():
+    idea = make_idea("체크셔츠 출근 코디", "체크셔츠 코디", "구매와 착용 경험")
+    idea.idea.summary = "동료들에게 좋은 반응을 얻은 오슬로 인턴 생활"
+    idea.idea.angle = "오슬로 인턴 생활과 동료 반응을 중심으로 구성"
+    idea.idea.outline = ["동료들의 반응 소개"]
+    client = MockLLMClient()
+
+    WriterAgent(client).write(
+        idea,
+        raw_source="오슬로에서 체크셔츠를 샀고 인턴 출근룩으로 입어봤다.",
+        content_plan=ContentPlan(writing_script="제공된 구매와 착용 경험만 중심으로 구성합니다."),
+    )
+
+    payload = client.calls[0]["payload"]
+    assert payload["raw_source"] == "오슬로에서 체크셔츠를 샀고 인턴 출근룩으로 입어봤다."
+    for context_key in ("editorial_context", "refined_blog_idea", "content_contract"):
+        assert "summary" not in payload[context_key]
+        assert "angle" not in payload[context_key]
+        assert "outline" not in payload[context_key]
+        assert "search_intent" not in payload[context_key]
+        assert "content_perspective" not in payload[context_key]
+        assert "key_question" not in payload[context_key]
 
 
 def test_writer_prompt_requires_outline_fidelity_and_qualified_factual_language():
@@ -169,6 +204,65 @@ def test_writer_prompt_covers_contrast_connection_and_observable_donation_criter
     assert "wearing frequency, brand, style, size" in prompt
     assert "discuss both sides in the body" in prompt
     assert "use its practical connection once" in prompt
+
+
+def test_writer_prompt_preserves_raw_claim_relationships_over_plan_expansion():
+    prompt = WriterAgent(MockLLMClient()).prompt
+
+    assert "raw_source is the factual, experiential, and" in prompt
+    assert "subject/object relationship" in prompt
+    assert "money returned from reusing clothing as cheap shopping" in prompt
+
+
+def test_writer_resolves_source_grounded_editorial_mode_from_raw_source():
+    idea = make_idea(
+        "Y2K가 돌아와도 새 옷이 필요할까",
+        "Y2K 빈티지 활용",
+        "새 옷 대신 빈티지 활용",
+    )
+    def response_factory(_prompt, _schema, payload):
+        return BlogPost(
+            title=idea.idea.title,
+            keyword=idea.idea.keyword,
+            content="Y2K가 돌아와도 새 옷 대신 빈티지를 활용할 수 있습니다.",
+            summary=payload.get("summary", "주제에 맞는 내용을 정리합니다."),
+            cta="빈티지 활용 방법을 한 가지 생각해보세요.",
+        )
+
+    client = MockLLMClient(response_factory=response_factory)
+    writer = WriterAgent(client)
+    source = "Y2K가 다시 유행인데 새 옷 대신 빈티지에서 찾아보자."
+
+    writer.write(idea, raw_source=source, content_plan=ContentPlan(writing_script="원문 주장 순서만 정리합니다."))
+
+    payload = client.calls[0]["payload"]
+    assert payload["planning_mode"] == "source_grounded_editorial"
+    assert "WRITING MODE: SOURCE-GROUNDED EDITORIAL" in client.calls[0]["prompt"]
+
+
+def test_writer_keeps_guide_in_generative_mode():
+    idea = make_idea(
+        "빈티지 쇼핑 체크리스트",
+        "빈티지 쇼핑 체크리스트",
+        "옷 상태 확인 방법을 정리하는 가이드",
+    )
+    client = MockLLMClient()
+    WriterAgent(client).write(
+        idea,
+        raw_source="빈티지 쇼핑할 때 옷 상태 확인 방법을 체크리스트로 정리하고 싶다.",
+        content_plan=ContentPlan(writing_script="상태 확인 기준과 실행 순서를 정리합니다."),
+    )
+
+    assert client.calls[0]["payload"]["planning_mode"] == "generative_structured"
+    assert "WRITING MODE: SOURCE-GROUNDED EDITORIAL" not in client.calls[0]["prompt"]
+
+
+def test_writer_prompt_limits_unverified_trends_scope_and_rifit_capabilities():
+    prompt = WriterAgent(MockLLMClient()).prompt
+
+    assert "unverified timely or popularity claims" in prompt
+    assert "circular-economy argument" in prompt
+    assert "lets readers find, buy, receive recommendations for, or browse vintage items" in prompt
 
 
 def test_writer_rejects_unsupported_absolute_donation_claim():
@@ -211,6 +305,273 @@ def test_writer_rejects_missing_title_contrast_and_rifit_connection():
         assert "contrast" in str(error) or "rifit" in str(error)
     else:
         raise AssertionError("Missing title contrast or rifit connection should be rejected")
+
+
+def _experience_writer_idea(details: str = "오슬로에서 산 빈티지 체크셔츠로 출근 코디를 해봤다.") -> ScoredIdea:
+    idea = make_idea(
+        "오슬로에서 산 빈티지 체크셔츠로 출근 코디를 해봤다",
+        "빈티지 체크셔츠 출근 코디",
+        "개인적인 구매와 출근 코디 경험을 소개하는 후기",
+        details,
+    )
+    idea.idea.content_format = "경험 후기"
+    idea.idea.content_perspective = "출근 코디 경험"
+    idea.idea.outline = ["구매 경험", "출근 코디", "입어본 뒤 알게 된 점"]
+    return idea
+
+
+def test_writer_rejects_unprovided_personal_experience_details():
+    idea = _experience_writer_idea()
+    writer = writer_with_response(
+        idea.idea.title,
+        "저는 오슬로의 여러 빈티지샵을 돌아다니며 화이트와 그린 조합의 체크셔츠를 골랐습니다. "
+        "오래된 원단이 마음에 들었고 가죽 로퍼와 목걸이를 선택했습니다.",
+        idea.idea.keyword,
+    )
+
+    try:
+        writer.write(idea)
+    except ValueError as error:
+        assert "unsupported personal experience" in str(error)
+    else:
+        raise AssertionError("Unprovided personal experience should be rejected")
+
+
+def test_writer_allows_general_styling_suggestion_without_claiming_experience():
+    idea = _experience_writer_idea()
+    writer = writer_with_response(
+        idea.idea.title,
+        "빈티지 체크셔츠는 슬랙스와 매치해볼 수 있어 출근 코디에 활용할 수 있습니다.",
+        idea.idea.keyword,
+    )
+
+    assert writer.write(idea).content
+
+
+def test_writer_grounds_personal_claims_in_raw_source_but_allows_stated_experience():
+    idea = _experience_writer_idea()
+    raw_source = "오슬로에서 체크셔츠를 샀고 인턴 출근룩으로 입어봤다."
+
+    allowed = writer_with_response(
+        idea.idea.title,
+        "오슬로에서 산 체크셔츠를 인턴 출근룩으로 입어봤습니다. 슬랙스와 매치해볼 수 있어요.",
+        idea.idea.keyword,
+    )
+    assert allowed.write(idea, raw_source=raw_source).content
+
+    paraphrase = writer_with_response(
+        idea.idea.title,
+        "저도 오슬로에서 산 빈티지 체크셔츠로 출근 룩을 시도해봤습니다.",
+        idea.idea.keyword,
+    )
+    assert paraphrase.write(idea, raw_source=raw_source).content
+
+    invented = writer_with_response(
+        idea.idea.title,
+        "오슬로에서 산 체크셔츠로 출근 코디를 했습니다. 첫 출근이라 어떤 옷을 입을지 고민했고, 진청색 진과 매치해서 입었습니다.",
+        idea.idea.keyword,
+    )
+    try:
+        invented.write(idea, raw_source=raw_source)
+    except ValueError as error:
+        assert "unsupported personal experience" in str(error)
+    else:
+        raise AssertionError("Unsupported personal claims should be rejected")
+
+
+def test_writer_rejects_unprovided_first_day_and_reaction_events():
+    idea = _experience_writer_idea()
+    raw_source = "오슬로에서 체크셔츠를 샀고 인턴 출근룩으로 입어봤다."
+    responses = [
+        "오슬로에서 산 체크셔츠로 출근 코디를 했습니다. 첫 출근이라 긴장했습니다.",
+        "오슬로에서 산 체크셔츠로 출근 코디를 했습니다. 동료들이 체크셔츠를 칭찬했습니다.",
+        "오슬로에서 산 체크셔츠로 출근 코디를 했습니다. 진청색 청바지를 함께 입었습니다.",
+    ]
+
+    for content in responses:
+        writer = writer_with_response(idea.idea.title, content, idea.idea.keyword)
+        try:
+            writer.write(idea, raw_source=raw_source)
+        except ValueError as error:
+            assert "unsupported personal experience" in str(error)
+        else:
+            raise AssertionError("Unsupported personal event should be rejected")
+
+
+def test_writer_allows_accessory_styling_suggestion_without_owned_item_false_positive():
+    idea = _experience_writer_idea()
+    writer = writer_with_response(
+        idea.idea.title,
+        "빈티지 체크셔츠는 액세서리로 귀여운 목걸이나 통통 튀는 색상의 가방을 매치하면 전체적인 룩을 완성할 수 있습니다.",
+        idea.idea.keyword,
+    )
+
+    assert writer.write(idea).content
+
+
+def test_writer_uses_raw_source_as_personal_fact_boundary():
+    idea = _experience_writer_idea(
+        "오슬로에서 인턴 생활을 하며 따뜻한 색감의 체크셔츠를 저렴하게 샀다."
+    )
+    writer = writer_with_response(
+        idea.idea.title,
+        "오슬로에서 산 빈티지 체크셔츠로 출근 코디를 해봤습니다. 저는 재킷을 입고 출근했습니다.",
+        idea.idea.keyword,
+    )
+
+    try:
+        writer.write(idea, raw_source="오슬로에서 체크셔츠를 샀고 인턴 출근룩으로 입어봤다.")
+    except ValueError as error:
+        assert "unsupported personal experience" in str(error)
+    else:
+        raise AssertionError("Raw source must remain the personal fact boundary")
+
+
+def test_writer_debug_diagnostic_includes_marker_sentence_and_intermediate_plan(monkeypatch, capsys):
+    idea = _experience_writer_idea()
+    sentence = "오슬로에서 산 빈티지 체크셔츠로 출근 코디를 하며, 제가 산 체크셔츠에 슬랙스를 실제로 입었습니다."
+    writer = writer_with_response(idea.idea.title, sentence, idea.idea.keyword)
+    plan = ContentPlan(writing_script="구매 경험과 출근 코디 경험을 중심으로 작성합니다.")
+    monkeypatch.setattr(writer_agent_module, "get_settings", lambda: SimpleNamespace(debug=True))
+
+    try:
+        writer.write(idea, raw_source=idea.idea.summary, content_plan=plan)
+    except ValueError as error:
+        assert "marker='슬랙스'" in str(error)
+        assert sentence in str(error)
+    else:
+        raise AssertionError("Unsupported personal experience should be rejected")
+
+    diagnostic = capsys.readouterr().err
+    assert "content_plan.writing_script" in diagnostic
+    assert "writer_draft_before_validation" in diagnostic
+    assert "marker='슬랙스'" in diagnostic
+    assert sentence in diagnostic
+
+
+def test_writer_allows_personal_detail_explicitly_present_in_contract():
+    idea = _experience_writer_idea(
+        "오슬로에서 산 빈티지 체크셔츠에 검정 슬랙스와 로퍼를 함께 입어봤다."
+    )
+    writer = writer_with_response(
+        idea.idea.title,
+        "저는 검정 슬랙스와 로퍼를 체크셔츠와 함께 입었습니다. 출근 코디로 활용해본 경험을 정리합니다.",
+        idea.idea.keyword,
+    )
+
+    assert writer.write(idea).content
+
+
+def test_writer_rejects_unprovided_material_in_personal_claim():
+    idea = _experience_writer_idea()
+    writer = writer_with_response(
+        idea.idea.title,
+        "오슬로에서 산 빈티지 체크셔츠로 출근 코디를 하며, 제가 산 체크셔츠는 면 소재였습니다.",
+        idea.idea.keyword,
+    )
+
+    try:
+        writer.write(idea)
+    except ValueError as error:
+        assert "면소재" in str(error)
+    else:
+        raise AssertionError("Unprovided material in a personal claim should be rejected")
+
+
+def test_writer_allows_material_as_general_suggestion_or_condition():
+    idea = _experience_writer_idea()
+    responses = [
+        "빈티지 체크셔츠는 면바지와 매치해볼 수 있어 출근 코디에 활용할 수 있습니다. 체크셔츠가 면 소재라면 관리 라벨을 확인해보세요.",
+        "빈티지 체크셔츠는 출근 코디에 활용할 수 있습니다. 반면 체크셔츠는 다른 하의와도 조합할 수 있습니다.",
+    ]
+
+    for content in responses:
+        writer = writer_with_response(idea.idea.title, content, idea.idea.keyword)
+        assert writer.write(idea).content
+
+
+def test_writer_allows_material_explicitly_present_in_contract():
+    idea = _experience_writer_idea("오슬로에서 산 면 소재 빈티지 체크셔츠로 출근 코디를 해봤다.")
+    writer = writer_with_response(
+        idea.idea.title,
+        "오슬로에서 산 빈티지 체크셔츠로 출근 코디를 하며, 제가 산 체크셔츠는 면 소재였습니다.",
+        idea.idea.keyword,
+    )
+
+    assert writer.write(idea).content
+
+
+def test_writer_rejects_unprovided_location_event_relationship():
+    idea = _experience_writer_idea()
+    writer = writer_with_response(
+        idea.idea.title,
+        "오슬로에서 인턴으로 일하고 있어요. 오슬로에서 산 빈티지 체크셔츠로 출근 코디를 해봤습니다.",
+        idea.idea.keyword,
+    )
+
+    try:
+        writer.write(idea)
+    except ValueError as error:
+        assert "unsupported personal experience or event" in str(error)
+    else:
+        raise AssertionError("Unprovided location event should be rejected")
+
+
+def test_writer_rejects_unprovided_reaction_effect_and_era_claims():
+    idea = _experience_writer_idea()
+    writer = writer_with_response(
+        idea.idea.title,
+        "오슬로에서 산 빈티지 체크셔츠로 출근 코디를 하며, 이 셔츠는 80년대 스타일이라 학과 미팅에서 주변 반응이 좋았습니다. "
+        "자존감이 높아졌고 실제로 경제적 이득도 봤습니다.",
+        idea.idea.keyword,
+    )
+
+    try:
+        writer.write(idea)
+    except ValueError as error:
+        assert "unsupported personal experience or event" in str(error)
+    else:
+        raise AssertionError("Unprovided reaction or effect should be rejected")
+
+
+def test_writer_allows_general_event_and_effect_suggestions():
+    idea = _experience_writer_idea()
+    writer = writer_with_response(
+        idea.idea.title,
+        "빈티지 체크셔츠는 새 옷 구매를 줄이는 선택지가 될 수 있습니다. "
+        "출근 코디에서 체크셔츠를 활용하면 자신감 있는 분위기를 연출할 수 있습니다.",
+        idea.idea.keyword,
+    )
+
+    assert writer.write(idea).content
+
+
+def test_writer_experience_validator_does_not_classify_general_effect_as_owned_item_claim():
+    idea = _experience_writer_idea()
+    writer = writer_with_response(
+        idea.idea.title,
+        "빈티지 체크셔츠 출근 코디를 소개합니다. 이러한 선택은 자원의 낭비를 줄이고 환경 보호에도 도움이 됩니다.",
+        idea.idea.keyword,
+    )
+
+    assert writer.write(idea).content
+
+
+def test_writer_rejects_unsupported_rifit_service_reframing():
+    idea = _experience_writer_idea()
+    idea.idea.rifit_connection = "리핏의 의류 순환과 다음 사용으로 연결"
+    writer = writer_with_response(
+        idea.idea.title,
+        "오슬로에서 산 체크셔츠로 출근 코디를 소개합니다. 리패션 서비스는 요즘 많은 브랜드가 제공합니다.",
+        idea.idea.keyword,
+    )
+
+    try:
+        writer.write(idea)
+    except ValueError as error:
+        assert "unsupported" in str(error).lower()
+    else:
+        raise AssertionError("Unsupported RIFIT reframing should be rejected")
 
 
 def test_non_numeric_title_generates_normally():

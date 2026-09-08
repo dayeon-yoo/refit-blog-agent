@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from config.settings import get_settings
+from agents.content_planner_agent import ContentPlannerAgent
 from agents.idea_agent import IdeaGenerator
 from models.schemas import BlogIdea
 from orchestrator.workflow import run_manual_workflow, run_workflow
@@ -62,16 +63,21 @@ def run_refined_manual_workflow(
     writer=None,
     tag_agent=None,
     image_agent=None,
+    content_planner=None,
 ):
     """Refine one selected candidate, then reuse the manual pipeline once."""
     idea = refine_from_source(source, candidate_id, revision_request, generator=generator)
+    planner = content_planner or ContentPlannerAgent()
+    content_plan = planner.plan(source, idea)
     result = run_manual_workflow(
         idea,
         writer=writer,
         tag_agent=tag_agent,
         image_agent=image_agent,
+        source=source,
+        content_plan=content_plan,
     )
-    return idea, result
+    return idea, content_plan, result
 
 
 def main() -> None:
@@ -105,13 +111,14 @@ def main() -> None:
     if args.full_manual:
         if not args.source or not args.candidate_id:
             parser.error("--full-manual requires --source and --candidate-id")
-        idea, result = run_refined_manual_workflow(
+        idea, content_plan, result = run_refined_manual_workflow(
             args.source,
             args.candidate_id,
             args.revision,
         )
         print(json.dumps({
             "refined_blog_idea": idea.model_dump(mode="json"),
+            "content_plan": content_plan.model_dump(mode="json"),
             "workflow": result.model_dump(mode="json"),
         }, ensure_ascii=False, indent=2))
         return

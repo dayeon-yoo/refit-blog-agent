@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import sys
 from typing import List, Optional, Set
 
 from llm.client import LLMClient, get_llm_client
@@ -57,13 +58,15 @@ class IdeaGenerator:
         "checklist": ("체크리스트", "점검표"),
         "informational": ("정보", "설명", "해설"),
         "analysis": ("분석", "탐구"),
-        "experience": ("후기", "체험", "경험담"),
+        "experience": ("후기", "체험", "경험", "경험담", "리뷰", "일기"),
         "interview": ("인터뷰", "문답"),
         "experiment": ("실험",),
-        "styling": ("스타일링", "코디"),
+        "styling": ("스타일링", "스타일", "코디"),
         "fact_check": ("팩트체크", "사실 확인"),
         "problem_solving": ("문제 해결",),
         "process": ("과정",),
+        "trend": ("트렌드", "유행", "다시 돌아온", "스타일 흐름"),
+        "editorial": ("에디토리얼", "의견", "주장", "칼럼"),
     }
     _SOURCE_DIRECTION_SIGNALS = {
         "experience": _EXPERIENCE_SOURCE_SIGNALS,
@@ -194,6 +197,57 @@ class IdeaGenerator:
         }
 
     @classmethod
+    def _source_format_families(cls, source: str) -> Set[str]:
+        """Infer only explicit article-format signals from the raw source."""
+        normalized = (source or "").lower()
+        families = cls._format_families(normalized)
+
+        if cls._has_explicit_experience(normalized):
+            families.add("experience")
+        if any(signal in normalized for signal in ("코디", "스타일", "스타일링", "출근룩", "쇼핑", "찾아보", "즐기는 방법")):
+            families.add("styling")
+        if any(signal in normalized for signal in ("방법", "팁", "체크리스트", "가이드")):
+            families.add("guide")
+        if any(signal in normalized for signal in ("장단점", "비교", "무엇이 더", "vs", "차이점")):
+            families.add("comparison")
+        if any(signal in normalized for signal in ("유행", "트렌드", "다시 돌아온")):
+            families.add("trend")
+        if any(signal in normalized for signal in ("굳이", "필요가 있을까", "할 필요가 있을까")):
+            families.add("editorial")
+
+        return families
+
+    @classmethod
+    def _preserves_refinement_format(cls, source: str, candidate_format: str, output: str) -> bool:
+        """Prefer an explicit source format, falling back to the candidate format."""
+        candidate_text = re.sub(r"\s+", "", (candidate_format or "").lower())
+        output_text = re.sub(r"\s+", "", (output or "").lower())
+        if candidate_text and candidate_text == output_text:
+            return True
+        source_families = cls._source_format_families(source)
+        if source_families:
+            output_families = cls._format_families(output)
+            # Keep every explicit source format signal that can be validated.
+            return source_families.issubset(output_families)
+        return cls._preserves_format(candidate_format, output)
+
+    @classmethod
+    def _preserves_refinement_perspective(cls, source: str, candidate_perspective: str, output: str) -> bool:
+        """Prefer explicit source direction over an expansion metadata label."""
+        source_families = cls._source_direction_families(source)
+        if not source_families:
+            return cls._preserves_perspective(candidate_perspective, output)
+
+        output_families = cls._source_direction_families(output)
+        for family in source_families:
+            if family == "experience":
+                if not cls._preserves_experience_direction(output):
+                    return False
+            elif family not in output_families:
+                return False
+        return True
+
+    @classmethod
     def _preserves_experience_direction(cls, output: str) -> bool:
         normalized = (output or "").lower()
         has_narrative = any(signal in normalized for signal in cls._EXPERIENCE_OUTPUT_NARRATIVE_SIGNALS)
@@ -215,6 +269,46 @@ class IdeaGenerator:
         source_has_diy = any(signal in source.lower() for signal in cls._DIY_ACTION_SIGNALS)
         if not source_has_diy and any(signal in normalized_output for signal in cls._DIY_ACTION_SIGNALS):
             raise ValueError("Refined BlogIdea introduced an unsupported DIY or upcycling direction")
+        if not cls._preserves_source_contrast(source, normalized_output):
+            raise ValueError("Refined BlogIdea changed the source contrast or editorial argument")
+
+    @classmethod
+    def _preserves_source_contrast(cls, source: str, output: str) -> bool:
+        source_text = (source or "").lower()
+        output_text = (output or "").lower()
+        if "새 옷" in source_text and any(
+            signal in source_text for signal in ("말고", "대신", "필요가 있을까", "살 필요")
+        ):
+            if "새 옷" not in output_text and "새로운 옷" not in output_text:
+                return False
+            if not any(term in output_text for term in ("빈티지", "기존 옷", "재활용", "재사용", "활용")):
+                return False
+        if ("버릴 필요" in source_text or "버리지" in source_text) and not any(
+            term in output_text for term in ("버리", "재활용", "재사용", "활용", "빈티지")
+        ):
+            return False
+        return True
+
+    @classmethod
+    def _source_direction_feedback(cls, source: str) -> str:
+        source_text = (source or "").lower()
+        requirements = []
+        if "새 옷" in source_text and any(
+            signal in source_text for signal in ("말고", "대신", "필요가 있을까", "살 필요")
+        ):
+            requirements.append("the source's choice between buying new clothes and reusing vintage or existing clothes")
+        if "버릴 필요" in source_text or "버리지" in source_text:
+            requirements.append("the source's point that clothes do not need to be discarded just because a trend has passed")
+        if requirements:
+            return (
+                "The refinement changed the source contrast or editorial argument. "
+                "Preserve " + "; and ".join(requirements) + ". "
+                "Do not replace this argument with a shopping guide, checklist, or a new question."
+            )
+        return (
+            "The refinement changed the source direction. Preserve the source's explicit "
+            "claims, questions, actions, and subject/object relationships instead of adding a new topic."
+        )
 
     @classmethod
     def _expansion_correction_feedback(cls, source: str, error: ValueError) -> str:
@@ -233,6 +327,8 @@ class IdeaGenerator:
     @classmethod
     def _refinement_correction_feedback(cls, source: str, error: ValueError) -> str:
         message = str(error)
+        if "contrast or editorial argument" in message:
+            return cls._source_direction_feedback(source)
         if "content direction" in message or cls._has_explicit_experience(source):
             if cls._has_explicit_experience(source):
                 return (
@@ -313,8 +409,28 @@ class IdeaGenerator:
         for attempt in range(self._MAX_CORRECTION_RETRIES + 1):
             result = self.client.generate_structured(prompt, IdeaExpansionResult, payload)
             try:
+                returned_source = result.source_input
+                if returned_source != source_input:
+                    if get_settings().debug:
+                        print(
+                            "Idea expansion source_input normalized by LLM:\n"
+                            f"original={source_input!r}\n"
+                            f"returned={returned_source!r}",
+                            file=sys.stderr,
+                        )
+                    # source_input is provenance, not generated content. Keep
+                    # the application-owned raw source while validating ideas.
+                    result.source_input = source_input
                 return self._validate_expansion(source_input, result, expected)
             except ValueError as error:
+                if get_settings().debug:
+                    print(
+                        "[Idea Expansion Validation Failure]\n"
+                        f"reason={error}\n"
+                        "candidates="
+                        + repr([candidate.model_dump(mode="json") for candidate in result.candidates]),
+                        file=sys.stderr,
+                    )
                 if attempt >= self._MAX_CORRECTION_RETRIES:
                     raise
                 feedback = self._expansion_correction_feedback(source_input, error)
@@ -337,16 +453,32 @@ class IdeaGenerator:
         ).lower()
         if not idea.title.strip() or not idea.keyword.strip() or not idea.angle.strip() or not idea.summary.strip():
             raise ValueError("Refined BlogIdea is missing required fields")
-        cls._validate_source_direction(source_input, output)
+        try:
+            cls._validate_source_direction(source_input, output)
+        except ValueError as error:
+            if get_settings().debug:
+                print(
+                    "[Idea Refinement Direction Failure]\n"
+                    f"source={source_input!r}\n"
+                    f"title={idea.title!r}\n"
+                    f"key_question={idea.key_question!r}\n"
+                    f"summary={idea.summary!r}\n"
+                    f"outline={idea.outline!r}\n"
+                    f"reason={error}",
+                    file=sys.stderr,
+                )
+            raise
         if not any(term in output for term in cls._source_terms(candidate.title)):
             raise ValueError("Refined BlogIdea does not reflect the selected candidate")
-        if not cls._preserves_perspective(candidate.perspective, output):
+        if not cls._preserves_refinement_perspective(source_input, candidate.perspective, output):
             raise ValueError(
                 "Refined BlogIdea does not preserve the candidate perspective: "
                 f"candidate={candidate.perspective!r}, "
                 f"refined={idea.content_perspective!r}"
             )
-        if not cls._preserves_format(candidate.content_format, output):
+        if not cls._preserves_refinement_format(
+            source_input, candidate.content_format, idea.content_format or ""
+        ):
             raise ValueError(
                 "Refined BlogIdea does not preserve the candidate format: "
                 f"candidate={candidate.content_format!r}, "

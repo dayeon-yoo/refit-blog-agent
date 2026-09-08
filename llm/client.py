@@ -39,6 +39,8 @@ class MockLLMClient(LLMClient):
             response = self._default_blog_post(payload)
         elif schema.__name__ == "IdeaExpansionResult":
             response = self._default_idea_expansion(payload)
+        elif schema.__name__ == "ContentPlan":
+            response = self._default_content_plan(payload)
         elif schema.__name__ == "BlogIdea" and "selected_candidate" in payload:
             response = self._default_refined_idea(payload)
         else:
@@ -106,6 +108,31 @@ class MockLLMClient(LLMClient):
             "content": "\n\n".join(sections),
             "summary": summary or f"{title}에 대한 실천 방법을 정리했습니다.",
             "cta": cta,
+        }
+
+    @staticmethod
+    def _default_content_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
+        source = str(payload.get("raw_source", "")).strip()
+        idea = payload.get("refined_blog_idea", {})
+        content_format = str(idea.get("content_format") or "정보형").strip()
+        perspective = str(idea.get("content_perspective") or idea.get("angle") or "").strip()
+        outline = idea.get("outline") or []
+        if any(marker in f"{content_format} {perspective}" for marker in ("경험", "후기", "일기")):
+            direction = "명시된 구매·착용 경험을 중심으로 풀고, 주어지지 않은 개인 사실은 만들지 않습니다."
+        elif any(marker in f"{content_format} {perspective}" for marker in ("비교", "선택")):
+            direction = "비교 대상과 선택 기준을 차례로 설명하고 독자가 판단할 수 있게 합니다."
+        elif any(marker in f"{content_format} {perspective}" for marker in ("트렌드", "분석")):
+            direction = "원본 메모의 관찰을 중심으로 의미를 설명하되 확인되지 않은 사실은 단정하지 않습니다."
+        else:
+            direction = "질문과 핵심 기준을 설명한 뒤 독자가 적용할 수 있는 방법으로 연결합니다."
+        outline_text = "\n".join(f"- {item}" for item in outline) or "- BlogIdea의 핵심 질문과 다음 행동"
+        return {
+            "writing_script": (
+                f"[글 방향]\n{direction}\n\n"
+                f"[원본 메모]\n{source}\n\n"
+                f"[전개 순서]\n{outline_text}\n\n"
+                "[집필 주의]\n원본에 없는 개인 경험과 구체적 사실은 일반적인 제안이나 조건부 설명으로 처리합니다."
+            )
         }
 
     @staticmethod

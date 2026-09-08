@@ -56,6 +56,10 @@ class BlogIdea(RIFITBaseModel):
     outline: Optional[List[str]] = None
 
 
+class ContentPlan(RIFITBaseModel):
+    writing_script: str
+
+
 class IdeaCandidate(RIFITBaseModel):
     candidate_id: str
     title: str

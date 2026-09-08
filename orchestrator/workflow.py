@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from agents.brand_agent import BrandAgent
 from agents.critic_agent import CriticAgent
+from agents.content_planner_agent import ContentPlannerAgent
 from agents.idea_agent import IdeaGenerator
 from agents.image_agent import ImageAgent
 from agents.seo_agent import SEOAgent
@@ -9,7 +10,7 @@ from agents.trend_agent import TrendAgent
 from agents.writer_agent import WriterAgent
 from agents.tag_agent import TagAgent, MockKeywordDataProvider
 from config.settings import get_settings
-from models.schemas import BlogIdea, ScoredIdea, WorkflowResult
+from models.schemas import BlogIdea, ContentPlan, ScoredIdea, WorkflowResult
 from orchestrator.dedupe import filter_duplicates
 from providers.naver_keyword_provider import NaverKeywordProvider
 
@@ -110,6 +111,9 @@ def run_manual_workflow(
     writer: WriterAgent | None = None,
     tag_agent: TagAgent | None = None,
     image_agent: ImageAgent | None = None,
+    source: str = "",
+    content_plan: ContentPlan | None = None,
+    content_planner: ContentPlannerAgent | None = None,
 ) -> WorkflowResult:
     """Run one caller-provided BlogIdea without invoking the Idea Agent."""
     selected = ScoredIdea(
@@ -123,7 +127,10 @@ def run_manual_workflow(
     tag_agent = tag_agent or TagAgent(provider=build_keyword_provider())
     image_agent = image_agent or ImageAgent()
 
-    post = writer.write(selected)
+    if source and content_plan is None:
+        content_plan = (content_planner or ContentPlannerAgent()).plan(source, idea)
+
+    post = writer.write(selected, raw_source=source, content_plan=content_plan)
     tag_agent.recommend(post)
     planned = image_agent.plan(post)
 
