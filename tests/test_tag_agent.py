@@ -242,6 +242,149 @@ def test_similar_suffix_variants_are_limited_per_root():
     assert len(variants) <= 3
 
 
+def test_debug_trace_exposes_tag_pipeline_stages(monkeypatch, capsys):
+    monkeypatch.setenv("DEBUG", "true")
+    post = make_post(
+        "빈티지 체크셔츠 인턴룩",
+        "빈티지 셔츠, 인턴룩, 지속 가능한 패션",
+        "빈티지 체크셔츠로 출근 코디를 소개합니다.",
+        "오슬로에서 산 빈티지 체크셔츠로 인턴 출근 코디를 해봤습니다.",
+    )
+
+    TagAgent(MockKeywordDataProvider()).recommend(post, candidate_target=30, final_k=10)
+    diagnostic = capsys.readouterr().err
+
+    for stage in (
+        "[Tag Debug]",
+        "seed_keywords:",
+        "generated_candidates:",
+        "normalized_candidates:",
+        "deduplicated_candidates:",
+        "metrics_input:",
+        "ranked_candidates:",
+        "final_tags:",
+    ):
+        assert stage in diagnostic
+
+
+def test_candidate_generation_preserves_phrases_without_keyword_concatenation():
+    post = make_post(
+        "빈티지 체크셔츠로 완벽한 인턴룩 만들기: 새 옷 없이 코디하기",
+        "빈티지 셔츠, 인턴룩, 지속 가능한 패션",
+        "빈티지 체크셔츠로 출근 코디를 소개합니다.",
+        "오슬로에서 산 빈티지 체크셔츠로 인턴 출근 코디를 해봤습니다.",
+    )
+    candidates = TagAgent(MockKeywordDataProvider()).generate_candidates(post, target=80)
+
+    assert "빈티지셔츠인턴룩지속가능한패션" not in candidates
+    assert "빈티지셔츠" in candidates
+    assert "인턴룩" in candidates
+    assert "인턴출근룩" in candidates
+    assert "체크셔츠코디" in candidates
+    assert "지속" not in candidates
+    assert "가능한" not in candidates
+    assert "가능한패션" not in candidates
+
+
+def test_comparison_and_trend_phrases_are_source_shaped():
+    comparison = make_post(
+        "빈티지와 구제의 차이",
+        "빈티지, 구제, 재활용",
+        "빈티지와 구제의 의미 차이와 의류 재활용",
+        "빈티지와 구제의 의미 차이를 설명하고 의류 재활용을 연결합니다.",
+    )
+    comparison_candidates = TagAgent(MockKeywordDataProvider()).generate_candidates(comparison, target=80)
+    assert {"빈티지", "구제", "빈티지구제차이"}.issubset(comparison_candidates)
+    assert "빈티지구제재활용" not in comparison_candidates
+
+    trend = make_post(
+        "Y2K 패션이 다시 돌아온 지금",
+        "Y2K 패션, 빈티지 쇼핑, 옷 재활용",
+        "Y2K 스타일을 빈티지 쇼핑과 옷 재활용으로 즐기는 이야기",
+        "Y2K 유행이 돌아와도 빈티지 쇼핑과 옷 재활용을 활용할 수 있습니다.",
+    )
+    trend_candidates = TagAgent(MockKeywordDataProvider()).generate_candidates(trend, target=80)
+    assert {"y2k패션", "빈티지쇼핑", "옷재활용"}.issubset(trend_candidates)
+    assert "y2k패션빈티지쇼핑옷재활용" not in trend_candidates
+
+
+def test_suffix_expansion_requires_explicit_how_to_intent():
+    comparison = make_post(
+        "빈티지와 구제의 차이",
+        "빈티지, 구제, 재활용",
+        "두 개념의 차이를 설명합니다.",
+        "빈티지와 구제의 차이와 공통점을 설명합니다.",
+    )
+    candidates = TagAgent(MockKeywordDataProvider()).generate_candidates(comparison, target=80)
+    assert "재활용방법" not in candidates
+
+    guide = make_post(
+        "체크셔츠 코디 방법",
+        "체크셔츠 코디",
+        "체크셔츠를 활용하는 방법과 팁",
+        "체크셔츠 코디 방법을 정리합니다.",
+    )
+    guide_candidates = TagAgent(MockKeywordDataProvider()).generate_candidates(guide, target=80)
+    assert "체크셔츠코디방법" in guide_candidates
+
+
+def test_raw_source_is_primary_for_core_tag_phrases_with_noisy_metadata():
+    source = (
+        "인턴일기 ① : 오슬로에서 산 빈티지 체크셔츠로 출근 코디를 해봤다. "
+        "인턴 출근룩으로 직접 입어본 이야기와 체크셔츠 코디를 소개하고, "
+        "새 옷을 사는 대신 빈티지 옷을 활용하는 이야기를 자연스럽게 풀어보고 싶다."
+    )
+    post = make_post(
+        "오슬로에서 산 빈티지 체크셔츠로 출근 코디를 해봤다. 인턴 출근룩으로를 고를 때 확인한 기준",
+        "오슬로에서 산 빈티지 체크셔츠로",
+        "인턴 출근룩 기준과 안 입는 옷 정리 방법",
+        "빈티지 체크셔츠와 안 입는 옷 정리 기준을 설명합니다.",
+    )
+    agent = TagAgent(MockKeywordDataProvider())
+    candidates = agent.generate_candidates(post, target=100, source_input=source)
+
+    assert {"빈티지체크셔츠", "인턴출근룩", "체크셔츠코디"}.issubset(candidates)
+    assert "뒤재사용" not in candidates
+    assert "이야기와체크셔츠" not in candidates
+    assert "기준" not in candidates
+    assert "안입는옷코디" not in candidates
+    assert "안입는옷기준" not in candidates
+
+
+def test_raw_source_core_phrases_reach_metrics_input():
+    source = "빈티지와 구제는 비슷하게 쓰이지만 정확히 어떤 차이가 있는지 설명하고, 옷을 다시 사용하는 재활용으로 연결하고 싶다."
+    post = make_post(
+        "오염된 metadata title",
+        "무관한 keyword",
+        "가이드 기준 방법",
+        "빈티지와 구제를 설명합니다.",
+    )
+    provider = MockKeywordDataProvider()
+    TagAgent(provider).recommend(post, candidate_target=100, final_k=20, source_input=source)
+
+    assert {"빈티지", "구제", "빈티지구제차이"}.issubset(provider.requested_keywords)
+    assert any(tag in provider.requested_keywords for tag in ("옷재활용", "의류재활용"))
+
+
+def test_raw_source_does_not_trigger_unstated_unused_clothing_expansion():
+    source = "오슬로에서 산 빈티지 체크셔츠로 출근 코디를 해봤다."
+    post = make_post("체크셔츠 코디", "체크셔츠", "안 입는 옷 정리 기준", "안 입는 옷 코디와 정리 기준")
+    candidates = TagAgent(MockKeywordDataProvider()).generate_candidates(post, target=100, source_input=source)
+
+    assert "안입는옷코디" not in candidates
+    assert "안입는옷기준" not in candidates
+
+
+def test_raw_source_can_generate_unused_clothing_phrases_when_stated():
+    source = "옷장에 안 입는 옷이 너무 많아서 정리하려고 한다. 안 입는 옷을 버리지 않고 재사용하거나 수거하는 방법을 소개하고 싶다."
+    post = make_post("오염된 title", "무관한 keyword", "무관한 summary", "본문")
+    candidates = TagAgent(MockKeywordDataProvider()).generate_candidates(post, target=100, source_input=source)
+
+    assert "안입는옷" in candidates
+    assert "안입는옷정리" in candidates or "옷정리" in candidates
+    assert "옷재사용" in candidates
+
+
 def test_post_tags_are_space_free_and_unique():
     post = make_post("가을 옷장 정리", "가을 옷장 정리", "가을 옷장 정리", "가을 옷장을 정리합니다.")
     TagAgent(MockKeywordDataProvider()).recommend(post, candidate_target=60, final_k=30)

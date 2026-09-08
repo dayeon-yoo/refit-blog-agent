@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+import json
+import os
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -137,7 +140,7 @@ class TagAgent:
         "코디", "스타일", "스타일링", "활용", "업사이클링", "리폼", "재활용", "재사용",
         "재조합", "조합", "기부", "수거", "판매", "처리", "폐기", "청소", "비우기",
         "안입는옷", "아이템", "방법", "팁", "노하우", "수납", "공간", "분류", "기준",
-        "루틴", "주기", "지속", "가능한", "지속가능", "소비", "구매", "충동구매",
+        "루틴", "주기", "지속가능", "소비", "구매", "충동구매",
         "소재", "브랜드", "윤리", "용도", "관리", "착용", "오래", "처분", "순환",
     }
     _METADATA = {
@@ -149,6 +152,35 @@ class TagAgent:
     def __init__(self, provider: KeywordDataProvider, max_candidates: int = 100):
         self.provider = provider
         self.max_candidates = max_candidates
+        self._debug_trace: Optional[Dict[str, List]] = None
+        self._active_source_input = ""
+        self._candidate_provenance: Dict[str, str] = {}
+
+    @staticmethod
+    def _debug_enabled() -> bool:
+        return os.getenv("DEBUG", "").lower() == "true"
+
+    def _emit_debug_trace(self, post: BlogPost, final_tags: List[TagRecommendation]) -> None:
+        if not self._debug_enabled() or not self._debug_trace:
+            return
+        trace = self._debug_trace
+        print("[Tag Debug]", file=sys.stderr)
+        print("seed_keywords:", repr(trace.get("seed_keywords", [])), file=sys.stderr)
+        print("generated_candidates:", repr(trace.get("generated_candidates", [])), file=sys.stderr)
+        print("normalized_candidates:", repr(trace.get("normalized_candidates", [])), file=sys.stderr)
+        print("deduplicated_candidates:", repr(trace.get("deduplicated_candidates", [])), file=sys.stderr)
+        print("metrics_input:", repr(trace.get("metrics_input", [])), file=sys.stderr)
+        print(
+            "candidate_sources:",
+            repr([(tag, self._candidate_provenance.get(tag, "derived")) for tag in trace.get("deduplicated_candidates", [])]),
+            file=sys.stderr,
+        )
+        print(
+            "ranked_candidates:\n"
+            + json.dumps(trace.get("ranked_candidates", []), ensure_ascii=False),
+            file=sys.stderr,
+        )
+        print("final_tags:", repr([item.tag for item in final_tags]), file=sys.stderr)
 
     @staticmethod
     def _normalize_space(value: str) -> str:
@@ -158,6 +190,114 @@ class TagAgent:
         value = self._normalize_space(value)
         value = self._PUNCTUATION.sub(" ", value)
         return " ".join(value.split()).strip(" -:;.")
+
+    def _split_seed_phrases(self, value: str) -> List[str]:
+        """Keep explicitly separated keyword phrases independent."""
+        return [
+            phrase.strip()
+            for phrase in re.split(r"[,，/\n]+", value or "")
+            if phrase.strip()
+        ]
+
+    def _explicit_phrase_candidates(self, post: BlogPost, source_input: str = "") -> List[str]:
+        """Extract source-shaped phrases without generating arbitrary n-grams."""
+        keyword_phrases = self._split_seed_phrases(post.keyword or "")
+        values = list(keyword_phrases)
+        text = " ".join((source_input, post.title or "", post.summary or "", post.content or ""))
+        phrases: List[str] = []
+
+        def add(value: str) -> None:
+            cleaned = self._clean_phrase(value)
+            if cleaned and cleaned not in phrases:
+                phrases.append(cleaned)
+
+        for value in values:
+            words = [word for word in re.findall(r"[가-힣A-Za-z0-9]+", value)]
+            for index in range(len(words) - 1):
+                left = self._normalize_known_form(words[index])
+                right = self._normalize_known_form(words[index + 1])
+                if (
+                    left and right
+                    and self._is_phrase_component(left)
+                    and self._is_phrase_component(right)
+                ):
+                    add(f"{left} {right}")
+
+        # These are relationship-shaped phrases stated by the content, not
+        # arbitrary permutations of every extracted token.
+        for match in re.finditer(r"([가-힣A-Za-z0-9]+)\s+(?:출근|일상|데일리)\s+(?:코디|룩)", text, re.IGNORECASE):
+            add(f"{match.group(1)} 출근룩")
+        for match in re.finditer(r"([가-힣A-Za-z0-9]+)\s+출근룩(?:으로|을|를|은|는|이|가)?", text, re.IGNORECASE):
+            subject = self._strip_trailing_particle(match.group(1))
+            add(f"{subject} 출근룩")
+            add(f"{subject} 룩")
+        for match in re.finditer(
+            r"([가-힣A-Za-z0-9]+(?:셔츠|옷|의류))(?:로|을|를)?\s+(?:출근\s+)?코디",
+            text,
+            re.IGNORECASE,
+        ):
+            add(f"{match.group(1)} 코디")
+        for match in re.finditer(r"([가-힣A-Za-z0-9]+)\s+(쇼핑|재활용|재사용)", text, re.IGNORECASE):
+            if self._is_semantic_phrase_head(match.group(1)):
+                add(f"{match.group(1)} {match.group(2)}")
+
+        for match in re.finditer(r"([가-힣A-Za-z0-9]+)\s+옷을?\s+(활용|재사용|재활용)", text, re.IGNORECASE):
+            add(f"{match.group(1)} 옷 {match.group(2)}")
+
+        for match in re.finditer(r"안\s+입는\s+옷(?:을|는|이)?", text):
+            add("안입는옷")
+        for match in re.finditer(r"안\s+입는\s+옷(?:을|는|이)?\s+(?:버리지\s+않고\s+)?(재사용|재활용|수거|기부|판매|활용|정리)", text):
+            add(f"안입는옷{match.group(1)}")
+        for match in re.finditer(r"옷을\s+(?:다시\s+)?(?:[^.!?。！？]{0,20}?\s+)?(재사용|재활용)", text):
+            add(f"옷{match.group(1)}")
+        if "안 입는 옷" in text and "정리" in text:
+            add("안입는옷정리")
+
+        for match in re.finditer(
+            r"([가-힣A-Za-z0-9]+)\s+([가-힣A-Za-z0-9]+(?:셔츠|옷|의류))(?:으로|로|을|를|은|는|이|가)?",
+            text,
+            re.IGNORECASE,
+        ):
+            add(f"{match.group(1)} {match.group(2)}")
+
+        comparison_patterns = (
+            r"([가-힣A-Za-z0-9]+?)(?:와|과)\s*([가-힣A-Za-z0-9]+)(?:은|는|의)?[^.!?。！？]{0,30}(?:차이|장단점|비교)",
+            r"([가-힣A-Za-z0-9]+)\s+vs\s+([가-힣A-Za-z0-9]+)",
+        )
+        if any(marker in text.lower() for marker in ("차이", "장단점", "비교", " vs ")):
+            for pattern in comparison_patterns:
+                for match in re.finditer(pattern, text, re.IGNORECASE):
+                    left = self._strip_trailing_particle(match.group(1))
+                    right = self._strip_trailing_particle(match.group(2))
+                    add(left)
+                    add(right)
+                    add(f"{left}{right}차이")
+        return phrases
+
+    def _is_semantic_phrase_head(self, token: str) -> bool:
+        token = self._strip_trailing_particle(token)
+        return (
+            token in self._CONCEPT_TERMS
+            or token in {"빈티지", "구제", "y2k", "옷", "의류", "헌옷"}
+            or token.endswith(("옷", "의류", "셔츠"))
+        )
+
+    @staticmethod
+    def _strip_trailing_particle(token: str) -> str:
+        for particle in ("으로", "에게서", "에게로", "에서", "로", "을", "를", "은", "는", "의", "이", "가", "와", "과"):
+            if token.endswith(particle) and len(token) - len(particle) >= 2:
+                return token[: -len(particle)]
+        return token
+
+    def _is_phrase_component(self, token: str) -> bool:
+        """Avoid using grammatical modifier fragments as standalone roots."""
+        return (
+            self._is_likely_noun(token)
+            and token != "지속"
+            and not (len(token) >= 3 and token.endswith("한"))
+            and token not in {"없이"}
+            and not token.endswith(("하기", "만들기", "소개합니다"))
+        )
 
     def _is_bad_term(self, term: str) -> bool:
         term = self._clean_phrase(term)
@@ -196,13 +336,16 @@ class TagAgent:
         raw = self._clean_phrase(raw)
         if not raw:
             return ""
-        if self._is_likely_noun(raw):
-            return raw
-        particles = ("으로써", "으로서", "에게서", "에게로", "하고", "하며", "면서", "으로", "로", "을", "를", "은", "는", "의", "에", "와", "과")
+        stripped = self._strip_trailing_particle(raw)
+        if stripped != raw:
+            raw = stripped
+        particles = ("으로써", "으로서", "에게서", "에게로", "하고", "하며", "면서", "으로", "로", "을", "를", "은", "는", "의", "에", "와", "과", "이")
         for concept in sorted(self._CONCEPT_TERMS, key=len, reverse=True):
             for particle in particles:
                 if raw == concept + particle:
                     return concept
+        if self._is_likely_noun(raw):
+            return raw
         return ""
 
     def _term_sequences(self, phrase: str) -> List[List[str]]:
@@ -231,7 +374,11 @@ class TagAgent:
         if not phrase:
             return ""
         terms = phrase.split()
-        if not terms or any(not self._is_likely_noun(term) for term in terms):
+        if not terms or any(
+            not self._is_likely_noun(term)
+            and not (len(terms) > 1 and len(term) == 1 and re.fullmatch(r"[가-힣]", term))
+            for term in terms
+        ):
             return ""
         return "".join(terms)
 
@@ -269,10 +416,12 @@ class TagAgent:
     def _is_english_only(self, tag: str) -> bool:
         return bool(re.fullmatch(r"[a-z0-9]+", tag.lower()))
 
-    def _body_concepts(self, post: BlogPost) -> List[str]:
+    def _body_concepts(self, post: BlogPost, source_input: str = "") -> List[str]:
         """Extract known concepts and explicit action phrases from body text."""
-        text = (post.content or "").lower()
-        concepts = self._content_terms(post)
+        text = (source_input or post.content or "").lower()
+        concepts = self._content_terms(
+            post.model_copy(update={"content": source_input}) if source_input else post
+        )
         phrase_rules = (
             (("안 입", "안입", "입지 않", "한 번도 입"), "안입는옷"),
             (("분류", "나눠", "나누"), "분류"),
@@ -287,7 +436,7 @@ class TagAgent:
             # 안입는옷 tags when the article is actually about another topic.
             if concept == "안입는옷":
                 marker_count = sum(text.count(marker) for marker in markers)
-                priority_text = self._topic_text(post)
+                priority_text = source_input.lower() if source_input else self._topic_text(post)
                 if marker_count < 2 and not any(marker in priority_text for marker in markers):
                     continue
             concepts.append(concept)
@@ -300,7 +449,7 @@ class TagAgent:
             "옷", "옷장", "의류", "헌옷", "정리", "보관", "코디", "스타일", "스타일링",
             "활용", "업사이클링", "재활용", "재사용", "기부", "수거", "판매", "처리",
             "계절", "가을", "겨울", "봄", "여름", "시즌", "가방", "셔츠", "니트",
-            "지속", "가능한", "소비", "구매", "소재", "브랜드", "용도", "관리", "착용",
+            "소비", "구매", "소재", "브랜드", "용도", "관리", "착용",
             "오래", "처분", "순환", "충동구매",
         }
         body_terms: List[str] = []
@@ -311,10 +460,10 @@ class TagAgent:
                     body_terms.append(term)
         return body_terms
 
-    def _candidate_is_topic_relevant(self, tag: str, post: BlogPost) -> bool:
-        return self._relevance(tag, post) > 0.0
+    def _candidate_is_topic_relevant(self, tag: str, post: BlogPost, source_input: str = "") -> bool:
+        return self._relevance(tag, post, source_input=source_input) > 0.0
 
-    def is_valid_tag(self, tag: str, post: BlogPost) -> bool:
+    def is_valid_tag(self, tag: str, post: BlogPost, source_input: str = "") -> bool:
         """Validate the final representation, which must be one space-free search term."""
         if not tag or tag != tag.strip() or any(ch.isspace() for ch in tag):
             return False
@@ -334,24 +483,35 @@ class TagAgent:
             return False
         if len(tag) <= 3 and low in self._GENERIC_SINGLE_WORDS:
             return False
+        if low in {"기준", "방법", "팁", "노하우", "차이", "비교", "가이드", "정보", "추천"}:
+            return False
         if self._has_korean_topic(post) and self._is_english_only(tag):
             # Keep an exact English keyword phrase only when it is the source
             # keyword; do not let English single words fill Korean results.
             if tag != self._to_tag_form(post.keyword or ""):
                 return False
-        return self._candidate_is_topic_relevant(tag, post)
+        return self._candidate_is_topic_relevant(tag, post, source_input=source_input)
 
     def _is_sentence_like(self, tag: str) -> bool:
         if any(tag.endswith(ending) for ending in self._BAD_ENDINGS):
             return True
         return tag in self._BLOCKED_WORDS
 
-    def _relevance(self, tag: str, post: BlogPost) -> float:
+    def _relevance(self, tag: str, post: BlogPost, source_input: str = "") -> float:
         """Weight keyword/title more heavily than accidental body occurrences."""
         compact = tag.lower()
+        phrase_tags = {
+            self._to_tag_form(phrase)
+            for phrase in self._explicit_phrase_candidates(post, source_input=source_input)
+        }
+        if compact in phrase_tags:
+            return 1.0
 
         def field_score(value: str) -> float:
             terms = self._concept_terms(value)
+            explicit_phrases = [self._to_tag_form(phrase) for phrase in self._split_seed_phrases(value)]
+            if any(phrase and phrase == compact for phrase in explicit_phrases):
+                return 1.0
             if not terms:
                 return 0.0
             hits = sum(1 for term in terms if term in compact)
@@ -374,14 +534,26 @@ class TagAgent:
                 return 0.05
         return min(1.0, score)
 
-    def _add_candidate(self, raw: str, post: BlogPost, candidates: List[str], seen: set[str]) -> None:
+    def _add_candidate(
+        self,
+        raw: str,
+        post: BlogPost,
+        candidates: List[str],
+        seen: set[str],
+        provenance: str = "derived",
+    ) -> None:
+        if self._debug_trace is not None:
+            self._debug_trace["generated_candidates"].append(raw)
         tag = self._to_tag_form(raw)
         if not tag or tag in seen:
             return
-        if not self.is_valid_tag(tag, post):
+        if not self.is_valid_tag(tag, post, source_input=self._active_source_input):
             return
+        if self._debug_trace is not None:
+            self._debug_trace["normalized_candidates"].append(tag)
         seen.add(tag)
         candidates.append(tag)
+        self._candidate_provenance.setdefault(tag, provenance)
 
     def _add_ngrams(self, terms: List[str], post: BlogPost, candidates: List[str], seen: set[str]) -> None:
         clean = [term for term in terms if self._is_likely_noun(term)]
@@ -394,6 +566,8 @@ class TagAgent:
             self._add_ngrams(sequence, post, candidates, seen)
 
     def _add_suffixes(self, bases: List[str], topic_text: str, post: BlogPost, candidates: List[str], seen: set[str]) -> None:
+        if not any(marker in topic_text for marker in ("방법", "팁", "가이드", "체크리스트", "하는 법", "코디하기")):
+            return
         for base in bases:
             if any(base.endswith(suffix) for suffix in self._COMMON_SUFFIXES):
                 continue
@@ -432,7 +606,12 @@ class TagAgent:
             adjustment -= 0.15
         return adjustment
 
-    def _deduplicate_similar(self, candidates: List[str], limit: int) -> List[str]:
+    def _deduplicate_similar(
+        self,
+        candidates: List[str],
+        limit: int,
+        protected: Optional[set[str]] = None,
+    ) -> List[str]:
         """Limit variants from one concept group while preserving useful diversity."""
         suffixes = ("노하우", "방법", "팁", "추천", "정보")
 
@@ -451,12 +630,16 @@ class TagAgent:
         for candidate in candidates:
             grouped.setdefault(root(candidate), []).append(candidate)
 
-        selected: List[str] = []
+        protected = protected or set()
+        selected: List[str] = [candidate for candidate in candidates if candidate in protected][:limit]
+        selected_set = set(selected)
         family_counts: Dict[str, int] = {}
         root_counts: Dict[str, int] = {}
         # Keep at most three variants per root in the final candidate pool.
         for group in grouped.values():
             for candidate in group:
+                if candidate in selected_set:
+                    continue
                 candidate_root = root(candidate)
                 if root_counts.get(candidate_root, 0) >= 3:
                     continue
@@ -471,10 +654,26 @@ class TagAgent:
                     return selected
         return selected
 
-    def generate_candidates(self, post: BlogPost, target: int = 80) -> List[str]:
+    def generate_candidates(self, post: BlogPost, target: int = 80, source_input: str = "") -> List[str]:
         target = min(max(target, 0), self.max_candidates)
         if target == 0:
             return []
+
+        self._active_source_input = source_input or ""
+        self._candidate_provenance = {}
+        if self._debug_enabled():
+            self._debug_trace = {
+                "seed_keywords": [
+                    value for value in (post.keyword or "", post.title or "", post.summary or "") if value
+                ],
+                "generated_candidates": [],
+                "normalized_candidates": [],
+                "deduplicated_candidates": [],
+                "metrics_input": [],
+                "ranked_candidates": [],
+            }
+        else:
+            self._debug_trace = None
 
         title_terms = self._concept_terms(post.title or "")
         keyword_terms = self._concept_terms(post.keyword or "")
@@ -486,18 +685,26 @@ class TagAgent:
         candidates: List[str] = []
         seen: set[str] = set()
 
-        # Preserve high-signal search phrases first.
-        for phrase in (post.keyword or "", post.title or "", post.summary or ""):
-            self._add_candidate(phrase, post, candidates, seen)
+        raw_post = post.model_copy(update={"title": "", "keyword": "", "summary": "", "content": source_input}) if source_input else None
+        raw_phrases = self._explicit_phrase_candidates(raw_post) if raw_post else []
+        explicit_phrases = self._explicit_phrase_candidates(post, source_input=source_input)
 
-        # Then create only short, topic-shaped combinations.
-        self._add_sequence_ngrams(post.keyword or "", post, candidates, seen)
-        self._add_sequence_ngrams(post.title or "", post, candidates, seen)
-        self._add_sequence_ngrams(post.summary or "", post, candidates, seen)
-        self._add_sequence_ngrams(heading_text, post, candidates, seen)
+        for phrase in raw_phrases:
+            self._add_candidate(phrase, post, candidates, seen, provenance="raw_source_phrase")
+
+        # Preserve high-signal, independently stated phrases first. Do not
+        # collapse a comma-separated keyword field into one long tag.
+        for phrase in self._split_seed_phrases(post.keyword or ""):
+            self._add_candidate(phrase, post, candidates, seen, provenance="keyword_phrase")
+        for phrase in explicit_phrases:
+            self._add_candidate(phrase, post, candidates, seen, provenance="content_phrase")
+
+        # Then create short combinations within each explicit phrase only.
+        for phrase in self._split_seed_phrases(post.keyword or ""):
+            self._add_sequence_ngrams(phrase, post, candidates, seen)
 
         priority_terms = keyword_terms + title_terms + summary_terms + heading_terms
-        body_concepts = self._body_concepts(post)
+        body_concepts = self._body_concepts(post, source_input=source_input)
         concept_terms: List[str] = []
         for term in priority_terms + body_concepts:
             if term not in concept_terms:
@@ -544,9 +751,16 @@ class TagAgent:
                 self._add_candidate(template, post, candidates, seen)
 
         # Suffixes are allowed only for an already relevant base concept.
-        self._add_suffixes(list(candidates), topic_text, post, candidates, seen)
+        self._add_suffixes(list(candidates), source_input or topic_text, post, candidates, seen)
 
-        return self._deduplicate_similar(candidates, target)
+        protected = {
+            tag for tag, provenance in self._candidate_provenance.items()
+            if provenance == "raw_source_phrase"
+        }
+        deduplicated = self._deduplicate_similar(candidates, target, protected=protected)
+        if self._debug_trace is not None:
+            self._debug_trace["deduplicated_candidates"] = list(deduplicated)
+        return deduplicated
 
     def _normalize_metric(self, value, values):
         if not values or value is None:
@@ -591,17 +805,26 @@ class TagAgent:
             relevance -= 0.12
         return max(0.0, min(1.0, relevance))
 
-    def recommend(self, post: BlogPost, candidate_target: int = 80, final_k: int = 30) -> TagRecommendationResult:
+    def recommend(
+        self,
+        post: BlogPost,
+        candidate_target: int = 80,
+        final_k: int = 30,
+        source_input: str = "",
+    ) -> TagRecommendationResult:
         final_k = min(max(final_k, 0), 30)
-        candidates = self.generate_candidates(post, target=candidate_target)
+        candidates = self.generate_candidates(post, target=candidate_target, source_input=source_input)
         if not candidates or final_k == 0:
             post.tags = []
             return TagRecommendationResult(tags=[])
 
         # Only validated, deduplicated candidates reach the provider.
-        candidates = [candidate for candidate in candidates if self.is_valid_tag(candidate, post)]
+        candidates = [candidate for candidate in candidates if self.is_valid_tag(candidate, post, source_input=source_input)]
+        if self._debug_trace is not None:
+            self._debug_trace["metrics_input"] = list(candidates)
         if not candidates:
             post.tags = []
+            self._emit_debug_trace(post, [])
             return TagRecommendationResult(tags=[])
 
         try:
@@ -623,6 +846,7 @@ class TagAgent:
         entries = [entry for entry in entries if entry[1] >= self.MIN_RELEVANCE]
         if not entries:
             post.tags = []
+            self._emit_debug_trace(post, [])
             return TagRecommendationResult(tags=[])
 
         volumes = [entry[2].search_volume for entry in entries if entry[2].search_volume is not None]
@@ -667,6 +891,21 @@ class TagAgent:
             ))
 
         scored.sort(key=lambda item: item.ranking_score, reverse=True)
+        if self._debug_trace is not None:
+            self._debug_trace["ranked_candidates"] = [
+                {
+                    "tag": item.tag,
+                    "relevance": item.relevance_score,
+                    "search_demand": item.search_volume,
+                    "competition": item.competition,
+                    "saturation": item.saturation,
+                    "content_coverage": self._content_coverage(item.tag, post),
+                    "longtail": self._longtail_score(item.tag, post),
+                    "diversity": self.DIVERSITY_WEIGHT,
+                    "final_score": item.ranking_score,
+                }
+                for item in scored
+            ]
         out_tags: List[TagRecommendation] = []
         seen: set[str] = set()
         root_counts: Dict[str, int] = {}
@@ -725,4 +964,5 @@ class TagAgent:
         out_tags.sort(key=lambda item: item.ranking_score, reverse=True)
 
         post.tags = [recommendation.tag for recommendation in out_tags]
+        self._emit_debug_trace(post, out_tags)
         return TagRecommendationResult(tags=out_tags)
