@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import List, Optional, Set
 
 from llm.client import LLMClient, get_llm_client
 from config.settings import get_settings
-from models.schemas import BlogIdea
+from models.schemas import BlogIdea, IdeaCandidate, IdeaExpansionResult
 import math
 
 
@@ -23,10 +24,265 @@ def _jaccard(a: Set[str], b: Set[str]) -> float:
 
 
 class IdeaGenerator:
+    _CONCEPT_GROUPS = {
+        "clothing": ("옷", "의류", "의복", "의상", "헌옷", "셔츠", "패션", "아이템"),
+        "discard": ("버리", "폐기", "처분", "버릴"),
+        "donation": ("기부", "나눔"),
+        "collection": ("수거", "수거함", "의류수거함"),
+        "reuse": ("재사용", "재활용", "리폼", "업사이클링", "다시 입"),
+        "vintage": ("빈티지", "세컨드핸드", "중고"),
+        "shopping": ("쇼핑", "구매", "고르", "찾기"),
+        "color_trend": ("코어", "색", "컬러"),
+        "styling": ("코디", "스타일", "패션"),
+    }
+    _EXPERIENCE_SOURCE_SIGNALS = (
+        "직접 샀", "샀", "구매했", "입어봤", "써봤", "사봤", "해봤", "다녀왔", "사용해봤",
+        "경험했", "내가 산", "내가 입은", "해보니", "했더니", "산 경험",
+    )
+    _EXPERIENCE_CANDIDATE_SIGNALS = (
+        "개인적인 경험", "개인 경험", "경험을 공유", "경험과 교훈", "체험담",
+        "후기", "내가 ", "저는 ", "제가 ", "직접 해봤", "직접 사보", "직접 입어보",
+        "해보니", "사보니", "입어보니", "써보니", "경험 공유",
+    )
+    _FORMAT_FAMILIES = {
+        "comparison": ("비교", "대조"),
+        "guide": ("가이드", "방법", "how-to", "how to"),
+        "checklist": ("체크리스트", "점검표"),
+        "informational": ("정보", "설명", "해설"),
+        "analysis": ("분석", "탐구"),
+        "experience": ("후기", "체험", "경험담"),
+        "interview": ("인터뷰", "문답"),
+        "experiment": ("실험",),
+        "styling": ("스타일링", "코디"),
+        "fact_check": ("팩트체크", "사실 확인"),
+        "problem_solving": ("문제 해결",),
+        "process": ("과정",),
+    }
+
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.client = llm_client or get_llm_client()
         prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "idea.txt"
         self.prompt = prompt_path.read_text(encoding="utf-8").strip()
+        prompt_dir = prompt_path.parent
+        self.expansion_prompt = (prompt_dir / "idea_expansion.txt").read_text(encoding="utf-8").strip()
+        self.refinement_prompt = (prompt_dir / "idea_refinement.txt").read_text(encoding="utf-8").strip()
+
+    @staticmethod
+    def _candidate_count(value: int) -> int:
+        return min(5, max(3, int(value)))
+
+    @staticmethod
+    def _source_terms(value: str) -> Set[str]:
+        particles = ("으로", "에서", "에게", "까지", "부터", "처럼", "보다", "을", "를", "은", "는", "이", "가", "의", "에", "로", "와", "과")
+        terms: Set[str] = set()
+        for raw in re.findall(r"[가-힣A-Za-z0-9]+", (value or "").lower()):
+            term = raw
+            for particle in particles:
+                if term.endswith(particle) and len(term) - len(particle) >= 2:
+                    term = term[: -len(particle)]
+                    break
+            if len(term) > 1 and term not in {"같아", "것", "요즘", "같은"}:
+                terms.add(term)
+        return terms
+
+    @classmethod
+    def _concept_groups(cls, value: str) -> Set[str]:
+        compact = re.sub(r"\s+", "", (value or "").lower())
+        return {
+            group
+            for group, markers in cls._CONCEPT_GROUPS.items()
+            if any(marker in compact for marker in markers)
+        }
+
+    @classmethod
+    def _has_explicit_experience(cls, source: str) -> bool:
+        normalized = " ".join((source or "").lower().split())
+        return any(signal in normalized for signal in cls._EXPERIENCE_SOURCE_SIGNALS)
+
+    @classmethod
+    def _has_unsupported_experience_claim(cls, fields: tuple[str, ...]) -> bool:
+        text = " ".join(fields).lower()
+        return any(signal in text for signal in cls._EXPERIENCE_CANDIDATE_SIGNALS)
+
+    @classmethod
+    def _preserves_core_concepts(cls, source: str, candidate: str) -> bool:
+        source_groups = cls._concept_groups(source)
+        candidate_groups = cls._concept_groups(candidate)
+        if source_groups:
+            # Preserve the main semantic relation, while allowing a title to
+            # omit incidental context such as a city name.
+            required = 2 if len(source_groups) >= 2 else 1
+            return len(source_groups & candidate_groups) >= required
+
+        source_terms = cls._source_terms(source)
+        candidate_text = re.sub(r"\s+", "", (candidate or "").lower())
+        return bool(source_terms and any(term in candidate_text for term in source_terms))
+
+    @classmethod
+    def _preserves_perspective(cls, perspective: str, output: str) -> bool:
+        """Allow natural phrasing while requiring the perspective's core concepts."""
+        perspective_text = (perspective or "").strip().lower()
+        output_text = (output or "").lower()
+        if not perspective_text:
+            return False
+        if perspective_text in output_text:
+            return True
+
+        perspective_groups = cls._concept_groups(perspective_text)
+        output_groups = cls._concept_groups(output_text)
+        if perspective_groups:
+            required = min(2, len(perspective_groups))
+            return len(perspective_groups & output_groups) >= required
+
+        perspective_terms = cls._source_terms(perspective_text)
+        output_compact = re.sub(r"\s+", "", output_text)
+        return bool(perspective_terms) and sum(
+            term in output_compact for term in perspective_terms
+        ) >= max(1, (len(perspective_terms) + 1) // 2)
+
+    @classmethod
+    def _format_families(cls, value: str) -> Set[str]:
+        compact = re.sub(r"\s+", "", (value or "").lower())
+        return {
+            family
+            for family, markers in cls._FORMAT_FAMILIES.items()
+            if any(re.sub(r"\s+", "", marker.lower()) in compact for marker in markers)
+        }
+
+    @classmethod
+    def _preserves_format(cls, content_format: str, output: str) -> bool:
+        format_text = (content_format or "").strip().lower()
+        output_text = (output or "").lower()
+        if not format_text:
+            return False
+        if format_text in output_text:
+            return True
+
+        format_families = cls._format_families(format_text)
+        output_families = cls._format_families(output_text)
+        if format_families:
+            # A format such as "비교 가이드" can belong to both families;
+            # retaining either core family is enough to preserve the article form.
+            return bool(format_families & output_families)
+
+        format_terms = cls._source_terms(format_text)
+        output_compact = re.sub(r"\s+", "", output_text)
+        return bool(format_terms) and any(term in output_compact for term in format_terms)
+
+    @classmethod
+    def _validate_expansion(cls, source_input: str, result: IdeaExpansionResult, expected: int) -> IdeaExpansionResult:
+        if result.source_input.strip() != source_input.strip():
+            raise ValueError("Idea expansion changed the source input")
+        if not 3 <= len(result.candidates) <= 5 or len(result.candidates) != expected:
+            raise ValueError("Idea expansion must return the requested 3 to 5 candidates")
+
+        compact_source = re.sub(r"[^가-힣A-Za-z0-9]", "", source_input.lower())
+        titles: Set[str] = set()
+        token_sets: List[Set[str]] = []
+        perspective_formats: Set[tuple[str, str]] = set()
+        for candidate in result.candidates:
+            fields = (
+                candidate.title,
+                candidate.perspective,
+                candidate.content_format,
+                candidate.key_question,
+                candidate.brief_description,
+            )
+            if any(not field.strip() for field in fields):
+                raise ValueError("Idea candidate contains an empty required field")
+            if not cls._has_explicit_experience(source_input) and cls._has_unsupported_experience_claim(fields):
+                raise ValueError("Idea candidate invents personal experience not stated in the source input")
+            if candidate.candidate_id in {item.candidate_id for item in result.candidates if item is not candidate}:
+                raise ValueError("Idea expansion contains duplicate candidate_id")
+            normalized_title = " ".join(candidate.title.lower().split())
+            compact_title = re.sub(r"[^가-힣A-Za-z0-9]", "", candidate.title.lower())
+            if len(compact_source) >= 12 and compact_source in compact_title:
+                raise ValueError("Idea candidate copied the full source input into its title")
+            if normalized_title in titles:
+                raise ValueError("Idea expansion contains duplicate titles")
+            titles.add(normalized_title)
+            tokens = _tokens(candidate.title)
+            candidate_content = " ".join((candidate.title, candidate.key_question, candidate.brief_description))
+            if not cls._preserves_core_concepts(source_input, candidate_content):
+                raise ValueError("Idea candidate is unrelated to the source input")
+            if any(_jaccard(tokens, previous) > 0.8 for previous in token_sets):
+                raise ValueError("Idea expansion contains overly similar titles")
+            token_sets.append(tokens)
+            perspective_formats.add((candidate.perspective.strip().lower(), candidate.content_format.strip().lower()))
+
+        if len(result.candidates) > 1 and len(perspective_formats) < 2:
+            raise ValueError("Idea candidates must provide different perspectives or formats")
+        return result
+
+    def expand(self, user_input: str, candidate_count: int = 3) -> IdeaExpansionResult:
+        source_input = (user_input or "").strip()
+        if not source_input:
+            raise ValueError("user_input is required for idea expansion")
+        expected = self._candidate_count(candidate_count)
+        payload = {
+            "user_input": source_input,
+            "candidate_count": expected,
+            "constraints": {
+                "preserve_source_topic": True,
+                "require_distinct_perspectives": True,
+            },
+        }
+        result = self.client.generate_structured(self.expansion_prompt, IdeaExpansionResult, payload)
+        return self._validate_expansion(source_input, result, expected)
+
+    @classmethod
+    def _validate_refinement(cls, source_input: str, candidate: IdeaCandidate, idea: BlogIdea, revision_request: str) -> BlogIdea:
+        output = " ".join(
+            value for value in (
+                idea.title,
+                idea.keyword,
+                idea.angle,
+                idea.summary,
+                idea.content_format or "",
+                idea.content_perspective or "",
+                idea.key_question or "",
+                " ".join(idea.outline or []),
+            ) if value
+        ).lower()
+        if not idea.title.strip() or not idea.keyword.strip() or not idea.angle.strip() or not idea.summary.strip():
+            raise ValueError("Refined BlogIdea is missing required fields")
+        if not any(term in output for term in cls._source_terms(candidate.title)):
+            raise ValueError("Refined BlogIdea does not reflect the selected candidate")
+        if not cls._preserves_perspective(candidate.perspective, output):
+            raise ValueError(
+                "Refined BlogIdea does not preserve the candidate perspective: "
+                f"candidate={candidate.perspective!r}, "
+                f"refined={idea.content_perspective!r}"
+            )
+        if not cls._preserves_format(candidate.content_format, output):
+            raise ValueError(
+                "Refined BlogIdea does not preserve the candidate format: "
+                f"candidate={candidate.content_format!r}, "
+                f"refined={idea.content_format!r}"
+            )
+        if candidate.key_question.strip().lower() not in output:
+            raise ValueError("Refined BlogIdea does not preserve the candidate question")
+        if len(idea.outline or []) < 3:
+            raise ValueError("Refined BlogIdea requires a concrete outline")
+        if any(term in output for term in ("seo", "검색 의도", "fit_score", "metadata", "prompt", "agent")):
+            raise ValueError("Refined BlogIdea exposes internal metadata")
+        if revision_request:
+            revision_terms = cls._source_terms(revision_request)
+            if revision_terms and not any(term in output for term in revision_terms):
+                raise ValueError("Refined BlogIdea does not reflect the revision request")
+        return idea
+
+    def refine(self, source_input: str, candidate: IdeaCandidate, revision_request: str = "") -> BlogIdea:
+        source_input = (source_input or "").strip()
+        if not source_input:
+            raise ValueError("source_input is required for idea refinement")
+        payload = {
+            "source_input": source_input,
+            "selected_candidate": candidate.model_dump(mode="json"),
+            "revision_request": (revision_request or "").strip(),
+        }
+        result = self.client.generate_structured(self.refinement_prompt, BlogIdea, payload)
+        return self._validate_refinement(source_input, candidate, result, revision_request)
 
     def _fallback_candidates(self) -> List[dict]:
         return [

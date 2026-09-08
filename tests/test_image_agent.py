@@ -133,3 +133,70 @@ def test_section_placements_use_heading_numbers_without_intro_offset():
     assert all("본문 section" not in image.prompt for image in images)
     assert all("정보를 시각적으로 보완" not in image.prompt for image in images)
     assert all("의류과" not in image.prompt for image in images)
+
+
+def test_alt_text_is_short_natural_and_separate_from_prompt():
+    post = make_post(
+        """도입 문단입니다. 가을 옷장을 열고 옷을 꺼내 침대 위에 펼쳐봅니다.
+
+## 모든 의류 꺼내기
+옷장에서 옷을 하나씩 꺼내 침대 위에 모아봅니다.
+
+## 기준 정하기
+남길 옷과 정리할 옷을 두 그룹으로 나눕니다.
+
+## 공간 활용하기
+옷걸이와 수납함을 활용해 옷장 공간을 정리합니다.
+
+## 의류 재사용 및 기부하기
+상태가 좋은 옷을 기부용 상자에 담습니다."""
+    )
+    images = ImageAgent().plan(post).image_plan.images
+
+    assert images
+    assert all(image.alt_text != image.prompt for image in images)
+    assert all("옷를" not in image.alt_text for image in images)
+    assert all("본문 section" not in image.alt_text for image in images)
+    assert all("keyword" not in image.alt_text.lower() for image in images)
+    assert any("꺼내" in image.alt_text for image in images)
+    assert any("기부용 상자" in image.alt_text for image in images)
+
+
+def test_prompts_forbid_generated_text_and_semantic_actions_are_distinct():
+    post = make_post(
+        """가을 옷장을 열고 여러 옷을 꺼내 침대 위에 펼쳐봅니다.
+
+## 모든 의류 꺼내기
+옷장에서 옷을 하나씩 꺼내 침대 위에 모아봅니다.
+
+## 기준 정하기
+남길 옷과 정리할 옷을 두 그룹으로 나눕니다.
+
+## 계절에 맞춘 가을 의류 선택
+가디건과 긴팔 티셔츠, 청바지를 골라봅니다.
+
+## 공간 활용하기
+옷걸이와 수납함을 활용해 옷장 공간을 정리합니다.
+
+## 의류 재사용 및 기부하기
+상태가 좋은 옷을 기부용 상자에 담습니다."""
+    )
+    images = ImageAgent().plan(post).image_plan.images
+
+    assert len(images) == 5
+    assert all("no text" in image.prompt for image in images)
+    assert all("no typography" in image.prompt for image in images)
+    assert all("no letters" in image.prompt for image in images)
+    assert all("no numbers" in image.prompt for image in images)
+    assert all("no captions" in image.prompt for image in images)
+    assert all("no watermark" in image.prompt for image in images)
+    assert all("no logo" in image.prompt for image in images)
+    assert all("no readable signage" in image.prompt for image in images)
+    assert all("no text overlay" in image.prompt for image in images)
+    assert len({image.purpose for image in images}) == len(images)
+    assert len({image.prompt for image in images}) == len(images)
+    assert len({image.alt_text for image in images}) == len(images)
+    assert "옷장에서" in images[0].prompt or "꺼내" in images[0].prompt
+    assert any(image.image_type == "classification" for image in images)
+    assert any(image.image_type == "organization" for image in images)
+    assert any(image.image_type == "reuse" for image in images)

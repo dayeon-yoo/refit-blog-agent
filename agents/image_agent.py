@@ -17,6 +17,9 @@ class ImageAgent:
     )
     _GARMENT_TERMS = ("셔츠", "바지", "니트", "청바지", "가방", "옷장", "의류", "옷")
     _CTA_MARKERS = ("마무리", "정리해보세요", "시작해보세요", "실천해보세요", "함께해요")
+    _NO_TEXT = (
+        "이미지 안에 글자나 숫자, 문구, 로고, 워터마크, 읽을 수 있는 표지판과 텍스트 오버레이가 전혀 없음"
+    )
     _ROLE_RULES = (
         ("comparison", "비교 전후의 변화가 한눈에 보이는 장면", ("비교", "전후", "차이", "반면")),
         ("classification", "의류를 기준에 따라 나누어 놓은 장면", ("나누", "나눠", "구분", "종류별")),
@@ -68,15 +71,24 @@ class ImageAgent:
         heading_priority = (
             ("organization", "옷장 공간과 수납을 활용하는 장면", ("공간 활용", "공간", "옷걸이", "수납함", "선반", "바구니")),
             ("reuse", "기부하거나 다시 사용할 의류를 준비하는 장면", ("기부", "재사용", "재활용", "리폼", "새활용")),
+            ("classification", "남길 옷과 정리할 옷을 기준에 따라 나누는 장면", ("기준", "분류", "나누", "구분")),
             ("detail", "얼룩과 손상, 소재 상태를 가까이 확인하는 장면", ("상태", "얼룩", "손상", "소재", "봉제", "마모")),
+            ("process", "옷장에서 필요한 계절 옷을 골라 꺼내는 장면", ("꺼내", "선택", "계절에 맞춘")),
         )
         for role, purpose, markers in heading_priority:
             if any(marker in heading_text for marker in markers):
+                if role == "process" and self._contains(heading_text, ("꺼내",)):
+                    purpose = "옷장에서 옷을 하나씩 꺼내 모으는 장면"
+                elif role == "process" and self._contains(heading_text, ("선택", "계절에 맞춘")):
+                    purpose = "계절에 맞는 옷을 골라 준비하는 장면"
                 if role == "detail" and self._contains(heading_text, ("소재", "봉제", "라벨", "단추", "지퍼")):
                     purpose = "소재와 봉제선, 라벨 같은 의류 구조를 가까이 확인하는 장면"
                 elif role == "detail" and self._contains(heading_text, ("얼룩", "손상", "늘어남", "마모")):
                     purpose = "얼룩과 늘어남, 마모 같은 의류 상태를 가까이 확인하는 장면"
                 return role, purpose, 9.0
+
+        if index == 0 and not heading and len(paragraph) >= 80:
+            return "lifestyle", "옷장을 열고 여러 계절의 옷을 꺼내 펼쳐 보는 도입 장면", 8.5
 
         body_priority = (
             ("organization", "옷장 공간과 수납을 활용하는 장면", ("공간 활용", "옷걸이", "수납함", "선반", "바구니")),
@@ -160,11 +172,11 @@ class ImageAgent:
         elif len(garments) == 1:
             garment_label = garments[0]
         elif len(garments) == 2:
-            garment_label = f"{garments[0]}와 {garments[1]}"
+            garment_label = f"{garments[0]}{self._conjunction(garments[0])} {garments[1]}"
         else:
             garment_label = ", ".join(garments[:3])
         if role == "classification":
-            return f"{garment_label}를 두 그룹으로 나눈 정리 장면"
+            return f"{garment_label}{self._object_particle(garment_label)} 두 그룹으로 나눈 정리 장면"
         if role == "comparison":
             return f"정리 전후의 {garment_label}와 옷장 변화"
         if role == "detail":
@@ -178,18 +190,39 @@ class ImageAgent:
         if role == "reuse":
             if self._contains(text, ("기부", "수거", "전달")):
                 return "기부할 의류를 상태별로 분류해 상자에 담는 준비 과정"
-            return f"기존 {garment_label}를 새로운 용도로 활용하는 작업"
+            return f"기존 {garment_label}{self._object_particle(garment_label)} 새로운 용도로 활용하는 작업"
         if role == "styling":
-            return f"기존 {garment_label}를 조합한 일상 코디"
+            return f"기존 {garment_label}{self._object_particle(garment_label)} 조합한 일상 코디"
         if role == "checklist":
             return f"{garment_label}의 상태와 보관 조건을 확인하는 장면"
         if role == "process":
-            return f"{garment_label}를 실제로 정리하고 다루는 과정"
+            if self._contains(heading.lower(), ("꺼내",)):
+                return "옷장에서 옷을 하나씩 꺼내 침대 위에 모으는 장면"
+            if self._contains(heading.lower(), ("선택", "계절에 맞춘")):
+                return "옷장에서 가을 옷을 골라 침대 위에 모으는 장면"
+            return f"{garment_label}{self._object_particle(garment_label)} 실제로 정리하고 다루는 과정"
         if role == "organization":
             if self._contains(text, ("공간", "옷걸이", "수납함", "선반", "바구니")):
                 return "옷장 안 옷걸이와 수납함을 활용해 의류를 배치하는 장면"
             return "가정용 옷장과 수납된 계절 의류"
+        if role == "lifestyle":
+            return "옷장을 열고 여러 계절의 옷을 침대 위에 펼쳐놓은 전체 장면"
         return blog_post.title or blog_post.summary or "일상 속 의류 관리"
+
+    @staticmethod
+    def _has_final_consonant(value: str) -> bool:
+        for char in reversed(value.strip()):
+            if "가" <= char <= "힣":
+                return (ord(char) - ord("가")) % 28 != 0
+        return False
+
+    @classmethod
+    def _object_particle(cls, value: str) -> str:
+        return "을" if cls._has_final_consonant(value) else "를"
+
+    @classmethod
+    def _conjunction(cls, value: str) -> str:
+        return "과" if cls._has_final_consonant(value) else "와"
 
     def _make_prompt(self, role: str, subject: str, heading: str, blog_post: BlogPost) -> str:
         setting = "실제 가정의 침실 또는 옷장 앞"
@@ -220,11 +253,19 @@ class ImageAgent:
             composition = "확인해야 할 부분이 잘 보이는 손과 의류의 detail shot"
         elif role == "organization":
             composition = "수납 전후의 공간감과 손이 닿는 옷 배치가 함께 보이는 wide shot"
+        elif role == "lifestyle":
+            setting = "밝은 침실과 열린 옷장이 있는 생활 공간"
+            composition = "침대 위에 펼쳐진 여러 계절의 옷과 열린 옷장이 함께 보이는 넓은 사선 구도"
 
-        return f"{subject}, {setting}, {composition}, {style}"
+        return f"{subject}, {setting}, {composition}, {style}, {self._NO_TEXT}, no text, no typography, no letters, no numbers, no captions, no watermark, no logo, no readable signage, no text overlay"
 
-    def _make_alt_text(self, role: str, subject: str) -> str:
+    def _make_alt_text(self, role: str, subject: str, heading: str, paragraph: str) -> str:
+        text = f"{heading} {paragraph}".lower()
+        if role == "lifestyle":
+            return "옷장에서 여러 계절의 옷을 꺼내 침대 위에 펼쳐놓은 모습"
         if role == "classification":
+            if self._contains(text, ("남길", "정리할", "보관")):
+                return "남길 옷과 정리할 옷을 두 그룹으로 나누는 모습"
             return "자주 입는 옷과 보관할 옷을 두 그룹으로 나누어 정리하는 모습"
         if role == "comparison":
             return "정리 전후로 달라진 옷장과 의류 배치를 비교한 모습"
@@ -235,14 +276,22 @@ class ImageAgent:
                 return "옷감의 결과 봉제선, 라벨을 가까이 확인하는 모습"
             return "옷감과 의류의 얼룩이나 손상 상태를 가까이 확인하는 모습"
         if role == "reuse":
+            if "기부할" in subject:
+                return "정리한 옷을 기부용 상자에 담는 모습"
             return "기존 의류를 새로운 용도로 활용하는 작업 과정"
         if role == "styling":
             return "기존 옷을 조합해 일상 코디를 완성한 모습"
         if role == "checklist":
             return "의류 상태와 보관 조건을 차례로 확인하는 모습"
         if role == "organization":
-            return "계절 의류를 옷장과 수납공간에 정돈한 모습"
-        return subject
+            return "옷걸이와 수납함을 활용해 옷장 공간을 정리하는 모습"
+        if role == "process":
+            if self._contains(heading.lower(), ("꺼내",)):
+                return "옷장에서 옷을 하나씩 꺼내 모으는 모습"
+            if self._contains(heading.lower(), ("선택", "계절에 맞춘")):
+                return "가을 옷을 골라 침대 위에 모으는 모습"
+            return "옷장에서 옷을 꺼내 정리하는 모습"
+        return "옷을 살펴보고 정리하는 모습"
 
     def plan(self, blog_post: BlogPost) -> BlogPost:
         sections = self._parse_sections(blog_post.content, blog_post.title)
@@ -258,7 +307,7 @@ class ImageAgent:
                 purpose=info["purpose"],
                 prompt=self._make_prompt(role, subject, info["heading"], blog_post),
                 image_type=role,
-                alt_text=self._make_alt_text(role, subject),
+                alt_text=self._make_alt_text(role, subject, info["heading"], info["paragraph"]),
             ))
 
         blog_post.image_plan = ImagePlan(images=images)

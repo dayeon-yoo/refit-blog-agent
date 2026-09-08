@@ -49,6 +49,25 @@ class BlogIdea(RIFITBaseModel):
     rifit_connection: str
     seasonality: float = Field(..., ge=0.0, le=1.0)
     summary: str = ""
+    content_format: Optional[str] = None
+    content_perspective: Optional[str] = None
+    key_question: Optional[str] = None
+    target_reader: Optional[str] = None
+    outline: Optional[List[str]] = None
+
+
+class IdeaCandidate(RIFITBaseModel):
+    candidate_id: str
+    title: str
+    perspective: str
+    content_format: str
+    key_question: str
+    brief_description: str
+
+
+class IdeaExpansionResult(RIFITBaseModel):
+    source_input: str
+    candidates: List[IdeaCandidate]
 
 
 class ScoredIdea(RIFITBaseModel):

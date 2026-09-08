@@ -72,6 +72,17 @@ or:
 python -m pytest -q
 ```
 
+To run one manually provided BlogIdea through the existing Writer, Tag, and
+Image stages without invoking the Idea Agent, edit `manual_blog_idea()` in
+`main.py` and run:
+
+```bash
+python main.py --manual
+```
+
+The result is saved to `outputs/latest_workflow.json` using the same output
+path as the automatic workflow.
+
 ## Naver Search Ads keyword provider
 
 The default provider remains the deterministic mock provider. To use the Naver

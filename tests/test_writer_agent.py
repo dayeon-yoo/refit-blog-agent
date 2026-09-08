@@ -128,6 +128,41 @@ def test_summary_is_passed_to_writer_prompt_payload():
     assert client.calls[0]["payload"]["content_contract"]["summary"] == summary
 
 
+def test_writer_receives_refinement_planning_fields_as_content_contract():
+    client = MockLLMClient()
+    writer = WriterAgent(client)
+    scored = make_idea(
+        "의류 기부를 위한 분류 체크리스트",
+        "의류 기부 분류",
+        "의류수거함과 기부 중 선택하는 기준을 설명하는 비교 가이드",
+    )
+    scored.idea.content_format = "체크리스트"
+    scored.idea.content_perspective = "의류 처리 선택 기준"
+    scored.idea.key_question = "어떤 옷을 기부하고 어떤 옷을 수거로 보낼까요?"
+    scored.idea.outline = [
+        "기부 전 옷 상태 확인",
+        "의류수거함과 기부의 선택 기준",
+        "상태에 따른 다음 활용 방법",
+    ]
+
+    writer.write(scored)
+    payload = client.calls[0]["payload"]
+
+    assert payload["content_contract"]["outline"] == scored.idea.outline
+    assert payload["content_contract"]["key_question"] == scored.idea.key_question
+    assert payload["content_contract"]["content_perspective"] == scored.idea.content_perspective
+
+
+def test_writer_prompt_requires_outline_fidelity_and_qualified_factual_language():
+    prompt = WriterAgent(MockLLMClient()).prompt
+
+    assert "Each meaningful outline item must have a corresponding" in prompt
+    assert "observable condition details" in prompt
+    assert "기부처에 따라 기준이 다를 수 있으니 확인해보세요" in prompt
+    assert "Do not invent institutions, policies, statistics" in prompt
+    assert "cta should be one short, non-repetitive action suggestion" in prompt
+
+
 def test_non_numeric_title_generates_normally():
     post = WriterAgent(MockLLMClient()).write(make_idea(
         "겨울 니트 보관법",

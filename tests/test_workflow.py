@@ -6,7 +6,10 @@ from agents.seo_agent import SEOAgent
 from agents.trend_agent import TrendAgent
 from agents.writer_agent import WriterAgent
 from config.settings import get_settings
-from orchestrator.workflow import run_workflow
+from llm.client import MockLLMClient
+from models.schemas import BlogIdea
+from orchestrator.workflow import run_manual_workflow, run_workflow
+from agents.tag_agent import MockKeywordDataProvider, TagAgent
 
 
 def test_workflow_result_can_be_serialized_to_json():
@@ -122,3 +125,36 @@ def test_workflow_result_contains_connected_data():
             assert image.prompt
             assert image.image_type
             assert image.alt_text
+
+
+def test_manual_blog_idea_runs_writer_tag_image_pipeline_without_idea_agent():
+    idea = BlogIdea(
+        title="옷장에 안 입는 옷이 생기는 이유",
+        keyword="안 입는 옷 정리",
+        search_intent="정보 탐색",
+        angle="안 입게 되는 옷의 특징을 살펴보고 재활용, 기부, 판매까지 연결",
+        summary="옷장에 오래 남아 있는 옷을 점검하고 새로운 활용 방법을 소개한다.",
+        rifit_connection="입지 않는 옷을 버리는 대신 다시 순환시킬 수 있는 방법을 안내한다.",
+        seasonality=0.5,
+    )
+    client = MockLLMClient()
+    provider = MockKeywordDataProvider()
+    result = run_manual_workflow(
+        idea,
+        writer=WriterAgent(llm_client=client),
+        tag_agent=TagAgent(provider=provider),
+    )
+
+    assert len(client.calls) == 1
+    assert client.calls[0]["payload"]["content_contract"]["title"] == idea.title
+    assert result.ideas == [idea]
+    assert len(result.top_3) == 1
+    assert len(result.blog_posts) == 1
+    post = result.blog_posts[0]
+    assert post.title == idea.title
+    assert post.keyword == idea.keyword
+    assert post.content
+    assert post.tags
+    assert post.image_plan is not None
+    assert provider.was_called
+    assert all(image.placement for image in post.image_plan.images)

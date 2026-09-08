@@ -9,7 +9,7 @@ from agents.trend_agent import TrendAgent
 from agents.writer_agent import WriterAgent
 from agents.tag_agent import TagAgent, MockKeywordDataProvider
 from config.settings import get_settings
-from models.schemas import WorkflowResult
+from models.schemas import BlogIdea, ScoredIdea, WorkflowResult
 from orchestrator.dedupe import filter_duplicates
 from providers.naver_keyword_provider import NaverKeywordProvider
 
@@ -102,4 +102,33 @@ def run_workflow() -> WorkflowResult:
         ideas=idea_candidates,
         top_3=top_3,
         blog_posts=blog_posts,
+    )
+
+
+def run_manual_workflow(
+    idea: BlogIdea,
+    writer: WriterAgent | None = None,
+    tag_agent: TagAgent | None = None,
+    image_agent: ImageAgent | None = None,
+) -> WorkflowResult:
+    """Run one caller-provided BlogIdea without invoking the Idea Agent."""
+    selected = ScoredIdea(
+        idea_id="manual-idea-1",
+        scores={},
+        total_score=0,
+        reason="Manual BlogIdea input",
+        idea=idea,
+    )
+    writer = writer or WriterAgent()
+    tag_agent = tag_agent or TagAgent(provider=build_keyword_provider())
+    image_agent = image_agent or ImageAgent()
+
+    post = writer.write(selected)
+    tag_agent.recommend(post)
+    planned = image_agent.plan(post)
+
+    return WorkflowResult(
+        ideas=[idea],
+        top_3=[selected],
+        blog_posts=[planned],
     )

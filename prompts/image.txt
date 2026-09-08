@@ -28,6 +28,7 @@ Rules:
 - If a section explains a process or method, prefer instructional scenes showing the actual action.
 - Use realistic, natural composition and lighting. Avoid artificial, over-styled, overly glossy ad-like images.
 - Keep prompts natural, detailed, and content-aware rather than mechanical.
+- Every image prompt must explicitly prevent generated text: include no text, no typography, no letters, no numbers, no captions, no watermark, no logo, no readable signage, and no text overlay. Use plain, unbranded labels or packaging when those objects are necessary.
 
 Placement guidance:
 - placement should describe the role of the image in the article, not just a label.
