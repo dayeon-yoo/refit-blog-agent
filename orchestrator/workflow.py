@@ -132,7 +132,7 @@ def run_manual_workflow(
 
     post = writer.write(selected, raw_source=source, content_plan=content_plan)
     tag_agent.recommend(post, source_input=source)
-    planned = image_agent.plan(post)
+    planned = image_agent.plan(post, source_input=source)
 
     return WorkflowResult(
         ideas=[idea],

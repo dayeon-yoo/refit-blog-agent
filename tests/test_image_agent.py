@@ -2,11 +2,16 @@ from agents.image_agent import ImageAgent
 from models.schemas import BlogPost
 
 
-def make_post(content: str) -> BlogPost:
+def make_post(
+    content: str,
+    title: str = "가을 옷장 정리와 재사용",
+    keyword: str = "가을 옷장 정리",
+    summary: str = "옷을 분류하고 상태를 확인해 다시 활용하는 방법",
+) -> BlogPost:
     return BlogPost(
-        title="가을 옷장 정리와 재사용",
-        keyword="가을 옷장 정리",
-        summary="옷을 분류하고 상태를 확인해 다시 활용하는 방법",
+        title=title,
+        keyword=keyword,
+        summary=summary,
         content=content,
         cta="작은 부분부터 시작해 보세요.",
         tags=["가을옷장정리", "옷재사용"],
@@ -160,6 +165,116 @@ def test_alt_text_is_short_natural_and_separate_from_prompt():
     assert all("keyword" not in image.alt_text.lower() for image in images)
     assert any("꺼내" in image.alt_text for image in images)
     assert any("기부용 상자" in image.alt_text for image in images)
+
+
+def test_debug_trace_exposes_image_relevance_pipeline(monkeypatch, capsys):
+    monkeypatch.setenv("DEBUG", "true")
+    post = make_post(
+        """## 인턴 출근룩
+오슬로에서 산 빈티지 체크셔츠로 출근 코디를 해봤습니다.
+
+## 옷 재사용
+새 옷 대신 빈티지 옷을 활용하는 이야기입니다."""
+    )
+
+    ImageAgent().plan(post)
+    diagnostic = capsys.readouterr().err
+
+    for stage in (
+        "[Image Debug]",
+        "source_visual_topics:",
+        "post_visual_topics:",
+        "sections:",
+        "candidate_images:",
+        "deduplicated_images:",
+        "final_images:",
+    ):
+        assert stage in diagnostic
+    assert '"specific": []' in diagnostic
+    assert "인턴" in diagnostic
+    assert "재사용" in diagnostic
+
+
+def test_specific_experience_source_precedes_generic_reuse_scene():
+    source = (
+        "인턴일기 ① : 오슬로에서 산 빈티지 체크셔츠로 출근 코디를 해봤다. "
+        "인턴 출근룩으로 직접 입어본 이야기와 체크셔츠 코디를 소개하고, "
+        "새 옷을 사는 대신 빈티지 옷을 활용하는 이야기를 풀어보고 싶다."
+    )
+    post = make_post(source, title="인턴 출근룩", keyword="빈티지 체크셔츠", summary="")
+
+    images = ImageAgent().plan(post, source_input=source).image_plan.images
+
+    assert images
+    assert images[0].image_type == "styling"
+    assert "빈티지 체크셔츠" in images[0].prompt
+    assert "인턴 출근룩" in images[0].prompt
+
+
+def test_y2k_source_keeps_specific_style_visual():
+    source = (
+        "y2k 패션이 다시 유행으로 돌아온 지금, 굳이 새 옷을 살 필요가 있을까? "
+        "유행이 지났다고 해서 버릴 필요도 없다. 옷을 재활용할 필요가 있고, "
+        "특히 빈티지 매장에 가면 y2k를 쉽고 재밌게 쇼핑할 수 있다."
+    )
+    post = make_post(source, title="Y2K 패션", keyword="빈티지 쇼핑", summary="")
+
+    images = ImageAgent().plan(post, source_input=source).image_plan.images
+
+    assert images
+    assert any("Y2K" in image.prompt or "y2k" in image.prompt for image in images)
+    assert all(image.image_type not in {"organization", "reuse"} for image in images)
+
+
+def test_explicit_comparison_uses_compared_subjects():
+    source = "빈티지와 구제의 차이를 설명하고 둘 다 옷을 다시 사용하는 재활용으로 연결하고 싶다."
+    post = make_post(source, title="빈티지와 구제의 차이", keyword="빈티지 구제", summary="")
+
+    images = ImageAgent().plan(post, source_input=source).image_plan.images
+
+    assert images
+    assert any(image.image_type == "comparison" for image in images)
+    comparison = next(image for image in images if image.image_type == "comparison")
+    assert "빈티지" in comparison.prompt
+    assert "구제" in comparison.prompt
+
+
+def test_generic_organization_topics_still_use_generic_roles():
+    post = make_post(
+        """## 옷 분류
+남길 옷과 정리할 옷을 나눕니다.
+
+## 공간 활용
+옷걸이와 수납함으로 옷장 공간을 정리합니다.
+
+## 기부 준비
+기부할 옷을 상자에 담습니다.""",
+        title="옷장 정리와 기부",
+        keyword="옷장 정리",
+        summary="",
+    )
+
+    images = ImageAgent().plan(post).image_plan.images
+    image_types = {image.image_type for image in images}
+
+    assert {"classification", "organization", "reuse"}.issubset(image_types)
+
+
+def test_identical_image_scenes_are_removed():
+    post = make_post(
+        """## 분류 1
+남길 옷과 정리할 옷을 분류합니다.
+
+## 분류 2
+남길 옷과 정리할 옷을 분류합니다.""",
+        title="옷장 정리",
+        keyword="옷장 정리",
+        summary="",
+    )
+
+    images = ImageAgent().plan(post).image_plan.images
+
+    assert len(images) == 1
 
 
 def test_prompts_forbid_generated_text_and_semantic_actions_are_distinct():

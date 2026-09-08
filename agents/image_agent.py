@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
 import re
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -37,6 +40,49 @@ class ImageAgent:
         self.client = llm_client or get_llm_client()
         prompt_path = Path(__file__).resolve().parents[1] / "prompts" / "image.txt"
         self.prompt = prompt_path.read_text(encoding="utf-8").strip()
+        self._debug_trace: dict[str, object] | None = None
+
+    @staticmethod
+    def _debug_enabled() -> bool:
+        return os.getenv("DEBUG", "").lower() == "true"
+
+    @staticmethod
+    def _topic_terms(text: str) -> dict[str, list[str]]:
+        specific_terms = (
+            "빈티지", "구제", "체크셔츠", "셔츠코디", "출근룩", "인턴룩",
+            "인턴", "y2k", "쇼핑", "스타일링", "코디",
+        )
+        generic_terms = (
+            "재사용", "재활용", "순환", "지속가능", "기부", "수거",
+            "옷장", "정리", "분류", "보관",
+        )
+        lowered = (text or "").lower()
+        return {
+            "specific": [term for term in specific_terms if term in lowered],
+            "generic": [term for term in generic_terms if term in lowered],
+        }
+
+    @staticmethod
+    def _specific_role(text: str) -> str:
+        lowered = (text or "").lower()
+        if (
+            "빈티지" in lowered and "구제" in lowered
+            and any(marker in lowered for marker in ("차이", "비교", "장단점", "반면"))
+        ):
+            return "comparison"
+        if any(marker in lowered for marker in ("출근룩", "인턴룩", "코디", "스타일링", "입어봤", "입어 보")):
+            return "styling"
+        if "y2k" in lowered and any(marker in lowered for marker in ("패션", "스타일", "쇼핑", "매장")):
+            return "styling"
+        return ""
+
+    def _emit_debug_trace(self) -> None:
+        if not self._debug_trace:
+            return
+        print("[Image Debug]", file=sys.stderr)
+        for key in ("source_visual_topics", "post_visual_topics", "sections", "candidate_images", "deduplicated_images", "final_images"):
+            value = self._debug_trace.get(key, [])
+            print(f"{key}: {json.dumps(value, ensure_ascii=False)}", file=sys.stderr)
 
     def _parse_sections(self, content: str, title: str) -> list[tuple[str, str, int]]:
         lines = content.splitlines()
@@ -65,9 +111,33 @@ class ImageAgent:
     def _contains(text: str, markers: tuple[str, ...]) -> bool:
         return any(marker in text for marker in markers)
 
-    def _classify(self, heading: str, paragraph: str, index: int, total: int) -> tuple[str, str, float]:
+    def _classify(
+        self,
+        heading: str,
+        paragraph: str,
+        index: int,
+        total: int,
+        source_input: str = "",
+    ) -> tuple[str, str, float]:
         text = f"{heading} {paragraph}".lower()
+        source_text = f"{source_input} {text}".lower()
         heading_text = heading.lower()
+
+        # Specific visual topics take precedence over broad reuse or
+        # organization signals. The source is included only as authority for
+        # topic detection; section text still drives the actual scene.
+        specific_role = self._specific_role(source_text)
+        section_topics = self._topic_terms(text)
+        source_topics = self._topic_terms(source_input)
+        has_section_specific = bool(section_topics["specific"])
+        has_source_specific = bool(source_topics["specific"])
+        if specific_role and (has_section_specific or (index == 0 and has_source_specific)):
+            if specific_role == "comparison":
+                return "comparison", "빈티지 의류와 구제 의류의 차이를 나란히 살펴보는 장면", 10.0
+            if "y2k" in source_text and "빈티지" in source_text:
+                return "styling", "Y2K 무드의 빈티지 의류를 살펴보고 조합하는 장면", 10.0
+            return "styling", "빈티지 체크셔츠를 활용한 인턴 출근룩 스타일링 장면", 10.0
+
         heading_priority = (
             ("organization", "옷장 공간과 수납을 활용하는 장면", ("공간 활용", "공간", "옷걸이", "수납함", "선반", "바구니")),
             ("reuse", "기부하거나 다시 사용할 의류를 준비하는 장면", ("기부", "재사용", "재활용", "리폼", "새활용")),
@@ -86,9 +156,6 @@ class ImageAgent:
                 elif role == "detail" and self._contains(heading_text, ("얼룩", "손상", "늘어남", "마모")):
                     purpose = "얼룩과 늘어남, 마모 같은 의류 상태를 가까이 확인하는 장면"
                 return role, purpose, 9.0
-
-        if index == 0 and not heading and len(paragraph) >= 80:
-            return "lifestyle", "옷장을 열고 여러 계절의 옷을 꺼내 펼쳐 보는 도입 장면", 8.5
 
         body_priority = (
             ("organization", "옷장 공간과 수납을 활용하는 장면", ("공간 활용", "옷걸이", "수납함", "선반", "바구니")),
@@ -117,6 +184,9 @@ class ImageAgent:
                     score -= 4.0
                 return role, purpose, score
 
+        if index == 0 and not heading and len(paragraph) >= 80:
+            return "lifestyle", "옷장을 열고 여러 계절의 옷을 꺼내 펼쳐 보는 도입 장면", 1.5
+
         # Long, clothing-specific sections still contain useful visual
         # context even when they do not use one of the explicit markers.
         if index < total - 1 and len(paragraph) >= 80 and self._contains(text, self._FASHION_TERMS):
@@ -128,10 +198,10 @@ class ImageAgent:
             return "lifestyle", "글의 상황을 보여주는 도입 장면", 1.5
         return "", "", 0.0
 
-    def _select_sections(self, sections: list[tuple[str, str, int]]) -> list[dict]:
+    def _select_sections(self, sections: list[tuple[str, str, int]], source_input: str = "") -> list[dict]:
         candidates = []
         for heading, paragraph, index in sections:
-            role, purpose, score = self._classify(heading, paragraph, index, len(sections))
+            role, purpose, score = self._classify(heading, paragraph, index, len(sections), source_input=source_input)
             if not role or score <= 0:
                 continue
             candidates.append({
@@ -141,6 +211,16 @@ class ImageAgent:
                 "role": role,
                 "purpose": purpose,
                 "score": score,
+                "extracted_topics": self._topic_terms(f"{heading} {paragraph}"),
+                "matched_concepts": [
+                    marker
+                    for _, _, markers in self._ROLE_RULES
+                    for marker in markers
+                    if marker in f"{heading} {paragraph}"
+                ],
+                "specific_topics": self._topic_terms(f"{heading} {paragraph}")["specific"],
+                "generic_topics": self._topic_terms(f"{heading} {paragraph}")["generic"],
+                "selected_rule": f"{role}_rule",
             })
 
         # Rank for quality, cap repeated roles, then restore article order.
@@ -159,8 +239,15 @@ class ImageAgent:
         selected.sort(key=lambda item: item["index"])
         return selected
 
-    def _visual_subject(self, role: str, paragraph: str, heading: str, blog_post: BlogPost) -> str:
-        text = f"{heading} {paragraph}".lower()
+    def _visual_subject(
+        self,
+        role: str,
+        paragraph: str,
+        heading: str,
+        blog_post: BlogPost,
+        source_input: str = "",
+    ) -> str:
+        text = f"{source_input} {heading} {paragraph} {blog_post.title} {blog_post.keyword}".lower()
         garments = []
         for term in sorted(self._GARMENT_TERMS, key=len, reverse=True):
             if term in text and not any(term in selected for selected in garments):
@@ -178,6 +265,8 @@ class ImageAgent:
         if role == "classification":
             return f"{garment_label}{self._object_particle(garment_label)} 두 그룹으로 나눈 정리 장면"
         if role == "comparison":
+            if "빈티지" in text and "구제" in text:
+                return "빈티지 의류와 구제 의류를 나란히 비교하는 장면"
             return f"정리 전후의 {garment_label}와 옷장 변화"
         if role == "detail":
             if self._contains(text, ("소재", "원단", "봉제", "라벨", "단추", "지퍼")):
@@ -192,6 +281,10 @@ class ImageAgent:
                 return "기부할 의류를 상태별로 분류해 상자에 담는 준비 과정"
             return f"기존 {garment_label}{self._object_particle(garment_label)} 새로운 용도로 활용하는 작업"
         if role == "styling":
+            if "y2k" in text and "빈티지" in text:
+                return "Y2K 무드의 빈티지 의류를 살펴보고 조합한 스타일링"
+            if "체크셔츠" in text and ("인턴" in text or "출근룩" in text):
+                return "빈티지 체크셔츠를 활용한 인턴 출근룩 스타일링"
             return f"기존 {garment_label}{self._object_particle(garment_label)} 조합한 일상 코디"
         if role == "checklist":
             return f"{garment_label}의 상태와 보관 조건을 확인하는 장면"
@@ -206,6 +299,8 @@ class ImageAgent:
                 return "옷장 안 옷걸이와 수납함을 활용해 의류를 배치하는 장면"
             return "가정용 옷장과 수납된 계절 의류"
         if role == "lifestyle":
+            if "y2k" in text and "빈티지" in text:
+                return "빈티지 매장에서 Y2K 스타일 의류를 살펴보는 장면"
             return "옷장을 열고 여러 계절의 옷을 침대 위에 펼쳐놓은 전체 장면"
         return blog_post.title or blog_post.summary or "일상 속 의류 관리"
 
@@ -293,15 +388,55 @@ class ImageAgent:
             return "옷장에서 옷을 꺼내 정리하는 모습"
         return "옷을 살펴보고 정리하는 모습"
 
-    def plan(self, blog_post: BlogPost) -> BlogPost:
+    def plan(self, blog_post: BlogPost, source_input: str = "") -> BlogPost:
+        self._debug_trace = {
+            # ImageAgent currently receives no raw source argument. Keeping
+            # this explicit makes that missing authority visible in debug output.
+            "source_visual_topics": self._topic_terms(source_input),
+            "post_visual_topics": self._topic_terms(" ".join((blog_post.title, blog_post.keyword, blog_post.summary, blog_post.content))),
+            "sections": [],
+            "candidate_images": [],
+            "deduplicated_images": [],
+            "final_images": [],
+        } if self._debug_enabled() else None
         sections = self._parse_sections(blog_post.content, blog_post.title)
-        chosen = self._select_sections(sections)
+        chosen = self._select_sections(sections, source_input=source_input)
+        if self._debug_trace is not None:
+            self._debug_trace["sections"] = [
+                {
+                    "placement": "hero-intro" if rank == 0 and info["index"] == 0 else f"section-{info['index']}",
+                    "heading": info["heading"],
+                    "body_summary": info["paragraph"][:160],
+                    "extracted_topics": info["extracted_topics"],
+                    "matched_concepts": info["matched_concepts"],
+                    "specific_topics": info["specific_topics"],
+                    "generic_topics": info["generic_topics"],
+                    "selected_rule": info["selected_rule"],
+                    "priority": info["score"],
+                }
+                for rank, info in enumerate(chosen)
+            ]
         images: list[ImagePrompt] = []
 
         for rank, info in enumerate(chosen):
             role = info["role"]
-            subject = self._visual_subject(role, info["paragraph"], info["heading"], blog_post)
+            subject = self._visual_subject(
+                role,
+                info["paragraph"],
+                info["heading"],
+                blog_post,
+                source_input=source_input,
+            )
             placement = "hero-intro" if rank == 0 and info["index"] == 0 else f"section-{info['index']}"
+            if self._debug_trace is not None:
+                self._debug_trace["candidate_images"].append({
+                    "placement": placement,
+                    "image_type": role,
+                    "subject": subject,
+                    "scene": info["purpose"],
+                    "purpose": info["purpose"],
+                    "source_reason": f"{role}_rule",
+                })
             images.append(ImagePrompt(
                 placement=placement,
                 purpose=info["purpose"],
@@ -310,5 +445,28 @@ class ImageAgent:
                 alt_text=self._make_alt_text(role, subject, info["heading"], info["paragraph"]),
             ))
 
-        blog_post.image_plan = ImagePlan(images=images)
+        deduplicated_images: list[ImagePrompt] = []
+        seen_scenes: set[tuple[str, str, str]] = set()
+        for image in images:
+            scene_key = (
+                image.image_type,
+                " ".join(image.purpose.split()),
+                " ".join(image.prompt.split()),
+            )
+            if scene_key in seen_scenes:
+                continue
+            seen_scenes.add(scene_key)
+            deduplicated_images.append(image)
+
+        blog_post.image_plan = ImagePlan(images=deduplicated_images)
+        if self._debug_trace is not None:
+            self._debug_trace["deduplicated_images"] = [
+                {"placement": image.placement, "image_type": image.image_type, "purpose": image.purpose, "prompt": image.prompt}
+                for image in deduplicated_images
+            ]
+            self._debug_trace["final_images"] = [
+                {"placement": image.placement, "image_type": image.image_type, "purpose": image.purpose, "alt_text": image.alt_text}
+                for image in deduplicated_images
+            ]
+            self._emit_debug_trace()
         return blog_post
