@@ -227,7 +227,27 @@ class IdeaGenerator:
         source_families = cls._source_format_families(source)
         if source_families:
             output_families = cls._format_families(output)
-            # Keep every explicit source format signal that can be validated.
+            # The raw source is authoritative, but incidental signals should
+            # not force every related family into the refined label. For
+            # example, an experience source can also mention styling without
+            # requiring the output to say both "experience" and "styling".
+            if "experience" in source_families:
+                return "experience" in output_families
+            if "comparison" in source_families:
+                return "comparison" in output_families
+            structured_families = source_families & {
+                "guide",
+                "checklist",
+                "informational",
+                "analysis",
+                "interview",
+                "experiment",
+                "fact_check",
+                "problem_solving",
+                "process",
+            }
+            if structured_families:
+                return bool(structured_families & output_families)
             return source_families.issubset(output_families)
         return cls._preserves_format(candidate_format, output)
 

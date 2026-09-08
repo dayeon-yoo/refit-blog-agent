@@ -580,6 +580,25 @@ def test_refinement_prefers_explicit_source_format_over_candidate_format():
     assert IdeaGenerator._validate_refinement(source, candidate, idea, "") == idea
 
 
+def test_refinement_allows_source_experience_to_correct_candidate_guide_format():
+    source = "인턴일기: 체크셔츠로 출근 코디를 직접 해봤다."
+    candidate = _refinement_candidate("체크셔츠 출근 코디").model_copy(
+        update={"content_format": "가이드"}
+    )
+
+    assert IdeaGenerator._preserves_refinement_format(
+        source, candidate.content_format, "일기형식"
+    )
+
+
+def test_refinement_keeps_candidate_format_when_source_is_ambiguous():
+    source = "가을 옷 주제로 써보고 싶다."
+
+    assert not IdeaGenerator._preserves_refinement_format(
+        source, "가이드", "개인 여행 후기"
+    )
+
+
 def test_refinement_prefers_explicit_source_perspective_over_candidate_label():
     source = "인턴일기: 체크셔츠로 출근 코디를 직접 해봤다."
     candidate = IdeaCandidate(

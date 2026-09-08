@@ -41,6 +41,12 @@ class MockLLMClient(LLMClient):
             response = self._default_idea_expansion(payload)
         elif schema.__name__ == "ContentPlan":
             response = self._default_content_plan(payload)
+        elif schema.__name__ == "QCResult":
+            response = {
+                "status": "PASS",
+                "issues": [],
+                "summary": "Mock QC completed.",
+            }
         elif schema.__name__ == "BlogIdea" and "selected_candidate" in payload:
             response = self._default_refined_idea(payload)
         else:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -106,10 +106,25 @@ class BlogPost(RIFITBaseModel):
     tags: Optional[List[str]] = None
 
 
+class QCIssue(RIFITBaseModel):
+    category: str
+    severity: Literal["warning", "error"]
+    message: str
+    evidence: str = ""
+    suggestion: str = ""
+
+
+class QCResult(RIFITBaseModel):
+    status: Literal["PASS", "NEEDS_REVISION", "BLOCK"]
+    issues: List[QCIssue] = Field(default_factory=list)
+    summary: str = ""
+
+
 class WorkflowResult(RIFITBaseModel):
     ideas: List[BlogIdea]
     top_3: List[ScoredIdea]
     blog_posts: List[BlogPost]
+    qc_results: List[QCResult] = Field(default_factory=list)
 
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.model_dump(mode="json"), ensure_ascii=False, indent=indent)

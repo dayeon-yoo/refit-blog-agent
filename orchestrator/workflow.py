@@ -5,6 +5,7 @@ from agents.critic_agent import CriticAgent
 from agents.content_planner_agent import ContentPlannerAgent
 from agents.idea_agent import IdeaGenerator
 from agents.image_agent import ImageAgent
+from agents.qc_agent import QCAgent
 from agents.seo_agent import SEOAgent
 from agents.trend_agent import TrendAgent
 from agents.writer_agent import WriterAgent
@@ -85,12 +86,14 @@ def run_workflow() -> WorkflowResult:
 
     writer = WriterAgent()
     image_agent = ImageAgent()
+    qc_agent = QCAgent()
 
     # MOCK_MODE always wins; Naver is selected explicitly with KEYWORD_PROVIDER=naver.
     provider = build_keyword_provider()
     tag_agent = TagAgent(provider=provider)
 
     blog_posts = []
+    qc_results = []
     for idea in top_3:
         post = writer.write(idea)
         # recommend tags (adds `tags` list to BlogPost)
@@ -98,11 +101,13 @@ def run_workflow() -> WorkflowResult:
         # then plan images
         planned = image_agent.plan(post)
         blog_posts.append(planned)
+        qc_results.append(qc_agent.check("", idea.idea, planned))
 
     return WorkflowResult(
         ideas=idea_candidates,
         top_3=top_3,
         blog_posts=blog_posts,
+        qc_results=qc_results,
     )
 
 
@@ -133,9 +138,11 @@ def run_manual_workflow(
     post = writer.write(selected, raw_source=source, content_plan=content_plan)
     tag_agent.recommend(post, source_input=source)
     planned = image_agent.plan(post, source_input=source)
+    qc_result = QCAgent().check(source, idea, planned, content_plan=content_plan)
 
     return WorkflowResult(
         ideas=[idea],
         top_3=[selected],
         blog_posts=[planned],
+        qc_results=[qc_result],
     )
