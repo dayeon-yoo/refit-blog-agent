@@ -24,6 +24,7 @@ def _jaccard(a: Set[str], b: Set[str]) -> float:
 
 
 class IdeaGenerator:
+    _MAX_CORRECTION_RETRIES = 1
     _CONCEPT_GROUPS = {
         "clothing": ("옷", "의류", "의복", "의상", "헌옷", "셔츠", "패션", "아이템"),
         "discard": ("버리", "폐기", "처분", "버릴"),
@@ -37,12 +38,18 @@ class IdeaGenerator:
     }
     _EXPERIENCE_SOURCE_SIGNALS = (
         "직접 샀", "샀", "구매했", "입어봤", "써봤", "사봤", "해봤", "다녀왔", "사용해봤",
-        "경험했", "내가 산", "내가 입은", "해보니", "했더니", "산 경험",
+        "경험했", "내가 산", "내가 입은", "해보니", "했더니", "산 경험", "인턴일기", "일기",
     )
     _EXPERIENCE_CANDIDATE_SIGNALS = (
         "개인적인 경험", "개인 경험", "경험을 공유", "경험과 교훈", "체험담",
         "후기", "내가 ", "저는 ", "제가 ", "직접 해봤", "직접 사보", "직접 입어보",
         "해보니", "사보니", "입어보니", "써보니", "경험 공유",
+    )
+    _EXPERIENCE_OUTPUT_NARRATIVE_SIGNALS = (
+        "경험", "후기", "체험", "기록", "일기",
+    )
+    _EXPERIENCE_OUTPUT_ACTION_SIGNALS = (
+        "구매", "샀", "사서", "입어", "착용", "출근", "코디", "활용", "해본", "해봤",
     )
     _FORMAT_FAMILIES = {
         "comparison": ("비교", "대조"),
@@ -58,6 +65,14 @@ class IdeaGenerator:
         "problem_solving": ("문제 해결",),
         "process": ("과정",),
     }
+    _SOURCE_DIRECTION_SIGNALS = {
+        "experience": _EXPERIENCE_SOURCE_SIGNALS,
+        "shopping": ("쇼핑", "찾아보", "찾기", "구매", "고르", "새 옷 말고"),
+        "styling": ("코디", "스타일링", "출근룩", "입어"),
+        "comparison": ("장단점", "비교", "무엇이 더", "vs", "차이점"),
+        "guide": ("방법", "팁", "체크리스트", "가이드"),
+    }
+    _DIY_ACTION_SIGNALS = ("업사이클링", "리폼", "diy", "커팅", "패치워크")
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.client = llm_client or get_llm_client()
@@ -170,6 +185,73 @@ class IdeaGenerator:
         return bool(format_terms) and any(term in output_compact for term in format_terms)
 
     @classmethod
+    def _source_direction_families(cls, source: str) -> Set[str]:
+        normalized = (source or "").lower()
+        return {
+            family
+            for family, signals in cls._SOURCE_DIRECTION_SIGNALS.items()
+            if any(signal.lower() in normalized for signal in signals)
+        }
+
+    @classmethod
+    def _preserves_experience_direction(cls, output: str) -> bool:
+        normalized = (output or "").lower()
+        has_narrative = any(signal in normalized for signal in cls._EXPERIENCE_OUTPUT_NARRATIVE_SIGNALS)
+        has_action = any(signal in normalized for signal in cls._EXPERIENCE_OUTPUT_ACTION_SIGNALS)
+        return has_narrative and has_action
+
+    @classmethod
+    def _validate_source_direction(cls, source: str, output: str) -> None:
+        source_families = cls._source_direction_families(source)
+        normalized_output = (output or "").lower()
+        for family in source_families:
+            if family == "experience":
+                if not cls._preserves_experience_direction(normalized_output):
+                    raise ValueError("Refined BlogIdea changed the source content direction: missing experience")
+                continue
+            if not any(signal.lower() in normalized_output for signal in cls._SOURCE_DIRECTION_SIGNALS[family]):
+                raise ValueError(f"Refined BlogIdea changed the source content direction: missing {family}")
+
+        source_has_diy = any(signal in source.lower() for signal in cls._DIY_ACTION_SIGNALS)
+        if not source_has_diy and any(signal in normalized_output for signal in cls._DIY_ACTION_SIGNALS):
+            raise ValueError("Refined BlogIdea introduced an unsupported DIY or upcycling direction")
+
+    @classmethod
+    def _expansion_correction_feedback(cls, source: str, error: ValueError) -> str:
+        message = str(error)
+        if "invent" in message.lower() or cls._has_explicit_experience(source):
+            return (
+                "The previous candidates violated validation. Do not invent personal experience "
+                "unless the source explicitly states it. Keep only the user's stated topic, actions, "
+                "and questions, and return distinct candidates."
+            )
+        return (
+            "The previous candidates violated validation. Preserve the source's core topic and "
+            "content direction, avoid unrelated expansions, and return distinct candidates."
+        )
+
+    @classmethod
+    def _refinement_correction_feedback(cls, source: str, error: ValueError) -> str:
+        message = str(error)
+        if "content direction" in message or cls._has_explicit_experience(source):
+            if cls._has_explicit_experience(source):
+                return (
+                    "The source explicitly contains a personal experience: the user bought a "
+                    "check shirt in Oslo and tried styling it for an intern commute. Preserve "
+                    "that purchase, wearing, and diary/review direction in the refinement. Do not "
+                    "turn it into a broad trend analysis or fashion history article."
+                )
+            return (
+                "The previous refinement changed the source content direction. Preserve any stated "
+                "experience, purchase, wearing, diary, shopping, comparison, or guide action from "
+                "the source. Do not replace it with a broad analysis or an unmentioned DIY/reform direction."
+            )
+        return (
+            "The previous refinement violated the content contract. Preserve the selected candidate "
+            "and the source problem while making the BlogIdea concrete. Do not invent facts or experiences."
+        )
+
+    @classmethod
     def _validate_expansion(cls, source_input: str, result: IdeaExpansionResult, expected: int) -> IdeaExpansionResult:
         if result.source_input.strip() != source_input.strip():
             raise ValueError("Idea expansion changed the source input")
@@ -227,8 +309,17 @@ class IdeaGenerator:
                 "require_distinct_perspectives": True,
             },
         }
-        result = self.client.generate_structured(self.expansion_prompt, IdeaExpansionResult, payload)
-        return self._validate_expansion(source_input, result, expected)
+        prompt = self.expansion_prompt
+        for attempt in range(self._MAX_CORRECTION_RETRIES + 1):
+            result = self.client.generate_structured(prompt, IdeaExpansionResult, payload)
+            try:
+                return self._validate_expansion(source_input, result, expected)
+            except ValueError as error:
+                if attempt >= self._MAX_CORRECTION_RETRIES:
+                    raise
+                feedback = self._expansion_correction_feedback(source_input, error)
+                payload = {**payload, "correction_feedback": feedback}
+                prompt = f"{self.expansion_prompt}\n\nCorrection feedback:\n{feedback}"
 
     @classmethod
     def _validate_refinement(cls, source_input: str, candidate: IdeaCandidate, idea: BlogIdea, revision_request: str) -> BlogIdea:
@@ -246,6 +337,7 @@ class IdeaGenerator:
         ).lower()
         if not idea.title.strip() or not idea.keyword.strip() or not idea.angle.strip() or not idea.summary.strip():
             raise ValueError("Refined BlogIdea is missing required fields")
+        cls._validate_source_direction(source_input, output)
         if not any(term in output for term in cls._source_terms(candidate.title)):
             raise ValueError("Refined BlogIdea does not reflect the selected candidate")
         if not cls._preserves_perspective(candidate.perspective, output):
@@ -281,8 +373,17 @@ class IdeaGenerator:
             "selected_candidate": candidate.model_dump(mode="json"),
             "revision_request": (revision_request or "").strip(),
         }
-        result = self.client.generate_structured(self.refinement_prompt, BlogIdea, payload)
-        return self._validate_refinement(source_input, candidate, result, revision_request)
+        prompt = self.refinement_prompt
+        for attempt in range(self._MAX_CORRECTION_RETRIES + 1):
+            result = self.client.generate_structured(prompt, BlogIdea, payload)
+            try:
+                return self._validate_refinement(source_input, candidate, result, revision_request)
+            except ValueError as error:
+                if attempt >= self._MAX_CORRECTION_RETRIES:
+                    raise
+                feedback = self._refinement_correction_feedback(source_input, error)
+                payload = {**payload, "correction_feedback": feedback}
+                prompt = f"{self.refinement_prompt}\n\nCorrection feedback:\n{feedback}"
 
     def _fallback_candidates(self) -> List[dict]:
         return [

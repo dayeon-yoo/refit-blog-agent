@@ -12,6 +12,15 @@ or "A or B", preserve that relationship in the outline and explain both sides
 before moving to a decision or action. Do not reduce a comparison or choice to
 an explanation of only one option.
 
+Preserve the source's content action and format as well as its nouns. If the source
+describes a personal diary, purchase, visit, wearing attempt, or other stated
+experience, keep the refinement in an experience, diary, or review direction; do
+not turn it into a broad history or trend analysis. If it asks the reader to find
+Y2K items through vintage shopping, keep shopping, selection, and styling as the
+actions; do not replace them with DIY, cutting, patchwork, reform, or upcycling
+unless the source explicitly proposes those actions. Do not invent a new interview,
+experiment, or other content format that changes what the user wants to do.
+
 Create a concrete, topic-specific outline. Do not use only generic headings such
 as introduction, body, and conclusion. Do not expose SEO strategy, metadata,
 agent names, scores, or internal workflow information.

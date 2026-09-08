@@ -498,3 +498,219 @@ def test_refinement_prompt_preserves_contrast_revision_and_concrete_planning_rul
     assert "Define target_reader by the user's actual problem" in prompt
     assert "rifit_connection as the specific point" in prompt
     assert "would require web research" in prompt
+
+
+def test_refinement_prompt_preserves_source_actions_and_content_format():
+    prompt = " ".join(IdeaGenerator(llm_client=MockLLMClient()).refinement_prompt.split())
+
+    assert "Preserve the source's content action and format" in prompt
+    assert "do not turn it into a broad history or trend analysis" in prompt
+    assert "keep shopping, selection, and styling as the actions" in prompt
+    assert "do not replace them with DIY" in prompt
+
+
+def test_refinement_rejects_experience_source_changed_to_generic_analysis():
+    source = "인턴일기: 오슬로에서 산 체크셔츠로 출근 코디를 해봤다."
+    candidate = _refinement_candidate("출근 코디 경험")
+    idea = _refined_idea(
+        title="체크셔츠와 사무실 패션의 변화",
+        keyword="사무실 패션 변화",
+        angle="체크셔츠가 직장인 복장에 미친 변화를 분석합니다.",
+        summary="사무실 패션의 역사와 변화를 분석합니다.",
+        content_format="비교 분석",
+        content_perspective="사무실 패션 변화",
+        key_question="체크셔츠는 사무실 패션을 어떻게 바꾸었을까요?",
+        outline=["체크셔츠의 역사", "사무실 복장 변화", "미래 패션"],
+    )
+
+    with pytest.raises(ValueError, match="content direction"):
+        IdeaGenerator._validate_refinement(source, candidate, idea, "")
+
+
+def test_refinement_rejects_vintage_shopping_changed_to_diy():
+    source = "Y2K 패션, 새 옷 말고 빈티지 쇼핑에서 찾아보세요."
+    candidate = _refinement_candidate("빈티지 쇼핑 선택 가이드").model_copy(
+        update={"title": "Y2K 빈티지 쇼핑 가이드", "content_format": "가이드"}
+    )
+    idea = _refined_idea(
+        title="Y2K 스타일을 빈티지 아이템으로 업사이클링하기",
+        keyword="Y2K 업사이클링",
+        angle="빈티지 아이템을 커팅하고 패치워크하는 DIY 방법",
+        summary="Y2K 아이템을 리폼하는 방법을 소개합니다.",
+        content_format="가이드",
+        content_perspective="DIY 업사이클링",
+        key_question="빈티지 아이템을 어떻게 업사이클링할까요?",
+        outline=["DIY 업사이클링", "커팅", "패치워크"],
+    )
+
+    with pytest.raises(ValueError):
+        IdeaGenerator._validate_refinement(source, candidate, idea, "")
+
+
+def _experience_refinement_candidate() -> IdeaCandidate:
+    return IdeaCandidate(
+        candidate_id="candidate-1",
+        title="빈티지 체크셔츠 출근 코디를 해봤다",
+        perspective="출근 코디 경험",
+        content_format="경험 후기",
+        key_question="체크셔츠로 출근 코디를 어떻게 해봤을까요?",
+        brief_description="직접 산 체크셔츠를 출근 코디에 활용한 경험을 정리합니다.",
+    )
+
+
+def _valid_experience_refinement() -> BlogIdea:
+    candidate = _experience_refinement_candidate()
+    return BlogIdea(
+        title=candidate.title,
+        keyword="빈티지 체크셔츠 출근 코디",
+        search_intent="정보 탐색",
+        angle="출근 코디 경험 후기 관점에서 직접 산 체크셔츠를 활용한 과정을 정리합니다.",
+        rifit_connection="",
+        seasonality=0.5,
+        summary="오슬로에서 산 체크셔츠로 출근 코디를 해본 경험과 선택 과정을 소개합니다.",
+        content_format=candidate.content_format,
+        content_perspective=candidate.perspective,
+        key_question=candidate.key_question,
+        outline=["체크셔츠를 고른 계기", "출근 코디에 조합한 과정", "입어본 뒤 느낀 점"],
+    )
+
+
+def test_refinement_retries_once_with_validation_feedback():
+    source = "인턴일기: 오슬로에서 산 체크셔츠로 출근 코디를 해봤다."
+    candidate = _experience_refinement_candidate()
+    valid = _valid_experience_refinement()
+    invalid = _refined_idea(
+        title="체크셔츠와 사무실 패션의 변화",
+        keyword="사무실 패션 변화",
+        angle="사무실 패션의 변화와 역사를 분석합니다.",
+        summary="체크셔츠가 사무실 패션에 미친 영향을 분석합니다.",
+        content_format="비교 분석",
+        content_perspective="사무실 패션 변화",
+        key_question="체크셔츠는 사무실 패션을 어떻게 바꾸었을까요?",
+        outline=["체크셔츠의 역사", "사무실 복장 변화", "미래 패션"],
+    )
+
+    def response_factory(_prompt, schema, payload):
+        return invalid if len(client.calls) == 1 else valid
+
+    client = MockLLMClient(response_factory=response_factory)
+    result = IdeaGenerator(llm_client=client).refine(source, candidate)
+
+    assert result == valid
+    assert len(client.calls) == 2
+    assert "correction_feedback" in client.calls[1]["payload"]
+    feedback = client.calls[1]["payload"]["correction_feedback"]
+    assert "source explicitly" in feedback
+    assert "Oslo" in feedback
+    assert "intern commute" in feedback
+    assert "trend analysis" in feedback
+
+
+def test_expansion_retries_fabricated_experience_once():
+    source = "Y2K 패션 새 옷 말고 빈티지 쇼핑에서 찾기"
+
+    def response_factory(_prompt, _schema, payload):
+        result = MockLLMClient._default_idea_expansion(payload)
+        if len(client.calls) == 1:
+            result = IdeaExpansionResult.model_validate(result)
+            result.candidates[0] = result.candidates[0].model_copy(
+                update={
+                    "title": "Y2K 패션을 직접 찾아본 후기",
+                    "perspective": "개인적인 경험",
+                    "content_format": "후기",
+                    "brief_description": "직접 쇼핑해본 경험을 공유합니다.",
+                }
+            )
+        return result
+
+    client = MockLLMClient(response_factory=response_factory)
+    result = IdeaGenerator(llm_client=client).expand(source)
+
+    assert len(result.candidates) == 3
+    assert len(client.calls) == 2
+    assert "correction_feedback" in client.calls[1]["payload"]
+    assert "Do not invent personal experience" in client.calls[1]["payload"]["correction_feedback"]
+
+
+def test_validation_failure_after_one_correction_retry_still_raises():
+    source = "Y2K 패션 새 옷 말고 빈티지 쇼핑에서 찾기"
+
+    def response_factory(_prompt, _schema, payload):
+        result = MockLLMClient._default_idea_expansion(payload)
+        result = IdeaExpansionResult.model_validate(result)
+        result.candidates[0] = result.candidates[0].model_copy(
+            update={
+                "title": "Y2K 패션을 직접 찾아본 후기",
+                "perspective": "개인적인 경험",
+                "content_format": "후기",
+                "brief_description": "직접 쇼핑해본 경험을 공유합니다.",
+            }
+        )
+        return result
+
+    client = MockLLMClient(response_factory=response_factory)
+    with pytest.raises(ValueError, match="invents personal experience"):
+        IdeaGenerator(llm_client=client).expand(source)
+
+    assert len(client.calls) == 2
+
+
+def test_valid_expansion_does_not_trigger_correction_retry():
+    client = MockLLMClient()
+
+    IdeaGenerator(llm_client=client).expand(SOURCE)
+
+    assert len(client.calls) == 1
+
+
+def test_experience_direction_accepts_natural_phrasing_across_refinement_fields():
+    source = "인턴일기: 오슬로에서 산 체크셔츠로 출근 코디를 해봤다."
+    candidate = _experience_refinement_candidate()
+    idea = _valid_experience_refinement().model_copy(
+        update={
+            "title": "빈티지 체크셔츠 출근 코디",
+            "summary": "오슬로에서 구매한 체크셔츠를 실제 인턴 출근에 활용한 경험을 정리합니다.",
+            "content_format": "경험 후기",
+            "content_perspective": "실제 착용 기록",
+            "outline": [
+                "오슬로에서 구매한 체크셔츠 소개",
+                "실제로 출근할 때 입어본 코디",
+                "착용 후 알게 된 점",
+            ],
+        }
+    )
+
+    assert IdeaGenerator._validate_refinement(source, candidate, idea, "") == idea
+
+
+def test_alternative_source_does_not_require_comparison_family():
+    source = "새 옷 말고 빈티지 쇼핑에서 Y2K를 찾아보세요"
+    output = "새 옷을 새로 사기보다 빈티지 쇼핑에서 Y2K 아이템을 찾아 스타일링하는 방법"
+
+    families = IdeaGenerator._source_direction_families(source)
+    assert "comparison" not in families
+    IdeaGenerator._validate_source_direction(source, output)
+
+
+def test_exact_y2k_source_detects_shopping_and_guide_not_comparison():
+    source = (
+        "Y2K 패션, 새 옷 말고 빈티지 쇼핑에서 찾아보세요. "
+        "다시 돌아온 Y2K 스타일을 빈티지 아이템으로 즐기는 방법"
+    )
+
+    families = IdeaGenerator._source_direction_families(source)
+
+    assert families == {"shopping", "guide"}
+    assert "comparison" not in families
+    IdeaGenerator._validate_source_direction(
+        source,
+        "새 옷을 새로 사기보다 빈티지 쇼핑에서 Y2K 아이템을 찾아 즐기는 방법입니다.",
+    )
+
+
+def test_explicit_comparison_source_still_requires_comparison_direction():
+    source = "의류 수거함과 기부의 장단점을 비교해보자"
+
+    assert "comparison" in IdeaGenerator._source_direction_families(source)
+    with pytest.raises(ValueError, match="missing comparison"):
+        IdeaGenerator._validate_source_direction(source, "기부할 옷을 고르는 방법을 안내합니다.")
