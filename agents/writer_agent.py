@@ -42,6 +42,12 @@ class WriterAgent:
         "하는", "해야", "할", "으로", "에서", "에게", "까지", "부터",
         "을", "를", "은", "는", "이", "가", "의", "에", "로", "와", "과",
     )
+    _CIRCULATION_TERMS = ("기부", "수거", "수거함", "의류순환", "재사용", "재활용")
+    _ABSOLUTE_CLAIM = re.compile(r"(?:반드시|무조건|필수(?:입니다|예요|에요)?|할 수 없습니다|할 수 없어요)")
+    _SPECULATIVE_DONATION_CLAIM = re.compile(
+        r"(?:다른 사람에게|남에게).{0,20}(?:잘 맞|어울릴)|"
+        r"(?:스타일|사이즈).{0,20}(?:맞을 가능성|적합할 가능성)"
+    )
 
     def __init__(self, llm_client: Optional[LLMClient] = None):
         self.client = llm_client or get_llm_client()
@@ -104,6 +110,11 @@ class WriterAgent:
             raise ValueError("Writer output title does not reflect the BlogIdea topic")
         if not cls._content_reflects_contract(idea, content):
             raise ValueError("Writer output does not reflect the BlogIdea title")
+        cls._validate_factual_claims(idea, content)
+        if not cls._preserves_title_contrast(idea, content):
+            raise ValueError("Writer output does not preserve the title's contrast")
+        if not cls._preserves_rifit_connection(idea, content):
+            raise ValueError("Writer output omits the relevant rifit connection")
 
         if promised_count is None:
             return
@@ -188,3 +199,59 @@ class WriterAgent:
         hits = sum(1 for term in source_terms if term in compact_content)
         required = 1 if len(source_terms) == 1 else 2
         return hits >= min(required, len(source_terms))
+
+    @classmethod
+    def _has_circulation_context(cls, idea, content: str) -> bool:
+        context = cls._compact(" ".join((idea.title, idea.angle, idea.summary, content)))
+        return any(term in context for term in cls._CIRCULATION_TERMS)
+
+    @classmethod
+    def _validate_factual_claims(cls, idea, content: str) -> None:
+        if not cls._has_circulation_context(idea, content):
+            return
+        for sentence in re.split(r"(?<=[.!?。！？])\s+|\n+", content):
+            if cls._ABSOLUTE_CLAIM.search(sentence) and any(
+                term in cls._compact(sentence) for term in ("기부", "세탁", "오염", "상태", "수거", "접수")
+            ):
+                raise ValueError("Writer output makes an unsupported absolute clothing-handling claim")
+            if cls._SPECULATIVE_DONATION_CLAIM.search(sentence):
+                raise ValueError("Writer output uses a speculative donation criterion")
+
+    @classmethod
+    def _contrast_requirements(cls, idea) -> list[tuple[str, str]]:
+        values = (idea.title, idea.key_question or "", idea.angle)
+        requirements: list[tuple[str, str]] = []
+        for value in values:
+            text = (value or "").lower()
+            parts = re.split(r"\s+(?:대신|말고|vs\.?|대\s*비교)\s+", text, maxsplit=1)
+            if len(parts) == 2:
+                left_terms = cls._topic_terms(parts[0])
+                right_terms = cls._topic_terms(parts[1])
+                if left_terms and right_terms:
+                    requirements.append((max(left_terms, key=len), max(right_terms, key=len)))
+            if "비교" in text:
+                match = re.search(r"(.+?)(?:와|과)\s+(.+?)\s+비교", text)
+                if match:
+                    left_terms = cls._topic_terms(match.group(1))
+                    right_terms = cls._topic_terms(match.group(2))
+                    if left_terms and right_terms:
+                        requirements.append((max(left_terms, key=len), max(right_terms, key=len)))
+        return requirements
+
+    @classmethod
+    def _preserves_title_contrast(cls, idea, content: str) -> bool:
+        compact_content = cls._compact(content)
+        return all(left in compact_content and right in compact_content for left, right in cls._contrast_requirements(idea))
+
+    @classmethod
+    def _preserves_rifit_connection(cls, idea, content: str) -> bool:
+        connection = (idea.rifit_connection or "").strip()
+        if not connection:
+            return True
+        connection_terms = cls._topic_terms(connection)
+        contract_terms = set(cls._contract_terms(idea))
+        distinctive = [term for term in connection_terms if term not in contract_terms and len(term) > 1]
+        if not distinctive:
+            return True
+        compact_content = cls._compact(content)
+        return any(term in compact_content for term in distinctive)

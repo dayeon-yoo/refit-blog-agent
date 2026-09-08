@@ -163,6 +163,56 @@ def test_writer_prompt_requires_outline_fidelity_and_qualified_factual_language(
     assert "cta should be one short, non-repetitive action suggestion" in prompt
 
 
+def test_writer_prompt_covers_contrast_connection_and_observable_donation_criteria():
+    prompt = WriterAgent(MockLLMClient()).prompt
+
+    assert "wearing frequency, brand, style, size" in prompt
+    assert "discuss both sides in the body" in prompt
+    assert "use its practical connection once" in prompt
+
+
+def test_writer_rejects_unsupported_absolute_donation_claim():
+    idea = make_idea(
+        "의류 수거함 대신 기부하는 방법 가이드",
+        "의류 기부 방법",
+        "의류수거함과 기부 중 선택하는 기준",
+    )
+    idea.idea.rifit_connection = "의류 순환 서비스와 다음 사용으로 연결"
+    writer = writer_with_response(
+        idea.idea.title,
+        "## 상태 확인\n의류 수거함과 기부를 비교할 때, 기부하기 전에는 반드시 옷의 상태를 점검해야 합니다. 세탁은 필수입니다. 의류 순환을 위해 다음 사용도 생각해봅니다.",
+        idea.idea.keyword,
+    )
+
+    try:
+        writer.write(idea)
+    except ValueError as error:
+        assert "absolute" in str(error)
+    else:
+        raise AssertionError("Unsupported absolute donation claim should be rejected")
+
+
+def test_writer_rejects_missing_title_contrast_and_rifit_connection():
+    idea = make_idea(
+        "의류 수거함 대신 기부하는 방법 가이드",
+        "의류 기부 방법",
+        "의류수거함과 기부 중 선택하는 기준",
+    )
+    idea.idea.rifit_connection = "의류 순환 서비스와 다음 사용으로 연결"
+    writer = writer_with_response(
+        idea.idea.title,
+        "## 기부 준비\n의류 상태를 확인한 뒤 기부 준비를 합니다. 의류 순환을 위해 다음 사용도 생각해봅니다.",
+        idea.idea.keyword,
+    )
+
+    try:
+        writer.write(idea)
+    except ValueError as error:
+        assert "contrast" in str(error) or "rifit" in str(error)
+    else:
+        raise AssertionError("Missing title contrast or rifit connection should be rejected")
+
+
 def test_non_numeric_title_generates_normally():
     post = WriterAgent(MockLLMClient()).write(make_idea(
         "겨울 니트 보관법",

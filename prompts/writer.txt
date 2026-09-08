@@ -23,7 +23,10 @@ Accuracy and qualification:
 - Do not turn an intuitive guess into a universal rule. Avoid unsupported criteria such as assuming that wearing frequency, brand, or design determines whether clothing is suitable for donation unless the BlogIdea explicitly makes that the topic.
 - Prefer observable condition details such as stains, damage, stretching, missing fasteners, and whether the item appears usable again, while making clear that actual acceptance standards can differ by donation organization.
 - Do not use absolute claims such as "반드시", "무조건", or "기부할 수 없습니다" as if they were official policy when no source or current policy is provided. Use conditional, check-first wording such as "기부처에 따라 기준이 다를 수 있으니 확인해보세요".
+- Do not use wearing frequency, brand, style, size, or another person's presumed taste or fit as a donation criterion. Keep the explanation grounded in observable condition and current usability.
 - Do not invent institutions, policies, statistics, or service capabilities. Interpret rifit_connection as a natural point for a next-use choice, not as proof of a feature the service was not given.
+- If the title or key_question presents an A/B choice or contrast, discuss both sides in the body and explain how the reader can choose; do not silently omit one side.
+- When rifit_connection is non-empty and relevant to the topic, use its practical connection once in the latter part of the article without copying it as an advertisement.
 
 Writing requirements:
 - Write natural Korean that can be published directly on Naver Blog.
