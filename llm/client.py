@@ -73,8 +73,9 @@ class MockLLMClient(LLMClient):
                 "core_subject_evidence": [raw_source],
                 "core_action_or_message": source,
                 "core_action_evidence": [raw_source],
-                "core_question_or_claim": source,
-                "core_question_evidence": [raw_source],
+                "core_question_or_claim": "",
+                "core_question_evidence": [],
+                "required_inclusions": [],
             },
         }
 
@@ -89,8 +90,9 @@ class MockLLMClient(LLMClient):
                 "core_subject_evidence": [source],
                 "core_action_or_message": source,
                 "core_action_evidence": [source],
-                "core_question_or_claim": source,
-                "core_question_evidence": [source],
+                "core_question_or_claim": "",
+                "core_question_evidence": [],
+                "required_inclusions": [],
             },
         }
 
@@ -262,7 +264,44 @@ class MockLLMClient(LLMClient):
                 "key_question": question,
                 "brief_description": brief,
             })
-        return {"source_input": source, "candidates": candidates}
+        result = {"source_input": source, "candidates": candidates}
+        # Imported lazily because the agent itself imports this client module.
+        # Only built-in mock templates use this fallback; supplied test responses
+        # must still reach the agent's validation and recovery unchanged.
+        from agents.idea_agent import IdeaGenerator
+        from models.schemas import IdeaExpansionResult
+
+        try:
+            IdeaGenerator._validate_expansion(source, IdeaExpansionResult.model_validate(result), count)
+        except ValueError:
+            return MockLLMClient._safe_idea_expansion(source, count)
+        return result
+
+    @staticmethod
+    def _safe_idea_expansion(source: str, count: int) -> Dict[str, Any]:
+        """Provide deterministic UI fixtures without adding a new content task."""
+        topic = source.split()[0][:10] if source.split() else "메모"
+        frames = [
+            ("주제 소개", f"{topic} · 메모에서 출발하기"),
+            ("핵심 내용", f"다시 읽는 이야기: {topic}"),
+            ("문장 흐름", f"한 편의 글로 잇는 {topic}"),
+            ("도입 구성", f"이야기의 시작, {topic}"),
+            ("마무리 구성", f"{topic}에 담긴 메시지"),
+        ]
+        return {
+            "source_input": source,
+            "candidates": [
+                {
+                    "candidate_id": f"candidate-{index + 1}",
+                    "title": title,
+                    "perspective": perspective,
+                    "content_format": "원문 기반 글",
+                    "key_question": "원문에 담긴 내용을 어떻게 전달할까요?",
+                    "brief_description": source,
+                }
+                for index, (perspective, title) in enumerate(frames[:count])
+            ],
+        }
 
     @staticmethod
     def _particle(value: str, with_final: str, without_final: str) -> str:

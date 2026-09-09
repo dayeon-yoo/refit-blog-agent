@@ -381,13 +381,21 @@ class IdeaGenerator:
             for span in evidence:
                 if span and span not in source:
                     issues.append(f"{field} evidence is not a raw-source substring: {span!r}")
+        for index, inclusion in enumerate(intent.required_inclusions):
+            field = f"required_inclusions [{index}]"
+            if not inclusion.evidence or not any(span.strip() for span in inclusion.evidence):
+                issues.append(f"{field} has no raw-source evidence")
+            for span in inclusion.evidence:
+                if not span.strip() or span not in source:
+                    issues.append(f"{field} evidence is not a raw-source substring: {span!r}")
         return issues
 
     @classmethod
     def _core_source_intent_provenance_issues(
         cls, source: str, intent: SourceIntent
     ) -> List[str]:
-        core_fields = {"core_subject", "core_action_or_message", "core_question_or_claim"}
+        # Mandatory inclusions are part of the anchor; optional details remain diagnostic.
+        core_fields = {"core_subject", "core_action_or_message", "core_question_or_claim", "required_inclusions"}
         return [
             issue for issue in cls._source_intent_provenance_issues(source, intent)
             if issue.split(" ", 1)[0] in core_fields

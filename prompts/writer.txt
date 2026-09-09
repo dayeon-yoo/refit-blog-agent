@@ -20,6 +20,21 @@ claim into a fact. Preserve the source's subject/object relationship: do not
 reinterpret money returned from reusing clothing as cheap shopping, or a stated
 vintage-shop action as a shopping checklist.
 
+Claim authority policy for source-grounded and experience writing:
+- PERSONAL_FACT: personal actions, possessions, feelings, reactions, and results
+  require explicit support in raw_source. Do not infer them from a topic or plan.
+- GENERAL_SUGGESTION: reader-facing styling or reuse ideas are allowed only within
+  the requested topic. Keep them clearly general or conditional, never as what the
+  author did and never as a guaranteed effect.
+- EXTERNAL_CLAIM: environmental, economic, product, historical, statistical,
+  trend, policy, and objective-effect claims require raw_source or supplied
+  research authority. If neither is supplied, omit them or qualify the text as a
+  non-factual suggestion.
+- EDITORIAL_TRANSITION: connective language, questions, mild opinions, and a CTA
+  may be generated, but they must not be promoted into personal or objective facts.
+If information is missing, shorten the article instead of filling the gap with a
+new claim.
+
 When a raw source and writing_script are provided, follow the script's article
 direction and sequence. Do not add personal events or concrete details merely to
 make the article feel complete. If the script identifies missing information,
@@ -31,6 +46,36 @@ actually states. Do not create literary scene-setting, weather, shop atmosphere,
 feelings, reactions, or specific outfit details. A missing clothing item may be
 offered as a general styling option, but must not be written as something the
 author wore or chose.
+
+Source-grounded drafting contract:
+- Treat raw_source as a factual whitelist, not merely as a topic reference. A
+  detail that is absent from raw_source is not made factual by appearing in the
+  writing_script, title, keyword, or editorial context.
+- In source-grounded and experience modes, the `refined_blog_idea` and
+  `editorial_context` payload sections are framing metadata only. They cannot
+  authorize facts, events, benefits, product properties, or personal claims.
+  Resolve any conflict in favor of raw_source, then use writing_script only for
+  ordering and grounding instructions.
+- Treat writing_script as authority for ordering and emphasis only. It may tell
+  you where to place a stated experience, but it cannot authorize a purchase
+  reason, outfit combination, product property, emotion, reaction, result, or
+  external claim that the source does not state.
+- Do not enrich a short experience with plausible filler. Omission is safer than
+  inventing a scene, workplace event, shop visit, color, material, fit, comfort,
+  popularity, environmental effect, or financial effect.
+- Keep the relation between an entity and an event exact. Buying a shirt in a
+  place does not mean working there; wearing a shirt for a commute does not mean
+  choosing unstated pants or shoes.
+- When a useful detail is not factual, write it as reader advice or a condition:
+  use forms such as "매치해볼 수 있어요", "활용하는 방법도 있습니다", or
+  "~라면 확인해보세요". Never convert that suggestion into "제가 입었어요",
+  "잘 어울리더라고요", or another personal claim.
+- Do not use product adjectives or material properties such as breathable,
+  comfortable, flattering, unique, natural fit, or good for commuting unless
+  the source explicitly provides that assessment.
+- Do not turn a stated reuse choice into a new environmental, economic, trend,
+  or social-impact claim. Preserve the user's scope even when a broader claim
+  would make the article sound more complete.
 
 Content contract rules:
 - Preserve the title's subject, promise, format, and scope. Do not replace it with a broader or adjacent clothing topic.

@@ -8,8 +8,11 @@ from pathlib import Path
 from config.settings import get_settings
 from agents.content_planner_agent import ContentPlannerAgent
 from agents.idea_agent import IdeaGenerator
-from models.schemas import BlogIdea
+from models.schemas import BlogIdea, IdeaCandidate, IdeaExpansionResult
 from orchestrator.workflow import run_manual_workflow, run_workflow
+
+
+LATEST_EXPANSION_PATH = Path(__file__).resolve().parent / "outputs" / "latest_expansion.json"
 
 
 def manual_blog_idea() -> BlogIdea:
@@ -31,42 +34,88 @@ def refine_from_source(
     revision_request: str = "",
     generator: IdeaGenerator | None = None,
 ) -> BlogIdea:
-    """Expand a source in-memory, select one candidate, and refine it."""
+    """Backward-compatible helper that expands once before selecting a candidate."""
     generator = generator or IdeaGenerator()
     expansion = generator.expand(source, candidate_count=3)
 
-    def candidate_id_key(value: object) -> str:
-        """Treat numeric IDs with or without the legacy prefix as equivalent."""
-        value = str(value).strip()
-        return value.removeprefix("candidate-")
+    try:
+        candidate = select_candidate(expansion, candidate_id)
+    except ValueError:
+        available = ", ".join(item.candidate_id for item in expansion.candidates)
+        raise ValueError(f"Unknown candidate_id {candidate_id}; available: {available}")
+    return refine_selected_candidate(source, candidate, revision_request, generator=generator)
 
-    requested_id = candidate_id_key(candidate_id)
+
+def _candidate_id_key(value: object) -> str:
+    """Treat numeric IDs with or without the legacy prefix as equivalent."""
+    value = str(value).strip()
+    return value.removeprefix("candidate-")
+
+
+def select_candidate(expansion: IdeaExpansionResult, candidate_id: str) -> IdeaCandidate:
+    requested_id = _candidate_id_key(candidate_id)
     candidate = next(
         (
             item
             for item in expansion.candidates
-            if candidate_id_key(item.candidate_id) == requested_id
+            if _candidate_id_key(item.candidate_id) == requested_id
         ),
         None,
     )
     if candidate is None:
-        available = ", ".join(item.candidate_id for item in expansion.candidates)
-        raise ValueError(f"Unknown candidate_id {candidate_id}; available: {available}")
+        raise ValueError(f"Candidate id {candidate_id} was not found in latest expansion.")
+    return candidate
+
+
+def refine_selected_candidate(
+    source: str,
+    candidate: IdeaCandidate,
+    revision_request: str = "",
+    generator: IdeaGenerator | None = None,
+) -> BlogIdea:
+    """Refine an already selected candidate without expanding again."""
+    generator = generator or IdeaGenerator()
     return generator.refine(source, candidate, revision_request)
+
+
+def save_latest_expansion(expansion: IdeaExpansionResult, path: Path = LATEST_EXPANSION_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(expansion.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_latest_expansion(source: str, path: Path = LATEST_EXPANSION_PATH) -> IdeaExpansionResult:
+    if not path.exists():
+        raise ValueError("Latest expansion was not found. Run --expand again for this source.")
+    expansion = IdeaExpansionResult.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    if expansion.source_input != source:
+        raise ValueError(
+            "Latest expansion source does not match --source. "
+            "Run --expand again for this source."
+        )
+    return expansion
 
 
 def run_refined_manual_workflow(
     source: str,
-    candidate_id: str,
+    candidate_id: str | None = None,
     revision_request: str = "",
     generator: IdeaGenerator | None = None,
     writer=None,
     tag_agent=None,
     image_agent=None,
     content_planner=None,
+    candidate: IdeaCandidate | None = None,
 ):
     """Refine one selected candidate, then reuse the manual pipeline once."""
-    idea = refine_from_source(source, candidate_id, revision_request, generator=generator)
+    if candidate is None:
+        if candidate_id is None:
+            raise ValueError("candidate_id or candidate is required")
+        idea = refine_from_source(source, candidate_id, revision_request, generator=generator)
+    else:
+        idea = refine_selected_candidate(source, candidate, revision_request, generator=generator)
     planner = content_planner or ContentPlannerAgent()
     content_plan = planner.plan(source, idea)
     result = run_manual_workflow(
@@ -95,12 +144,12 @@ def main() -> None:
     parser.add_argument(
         "--refine",
         action="store_true",
-        help="Expand a source in-memory, select a candidate, and print the refined BlogIdea",
+        help="Load the latest expansion, select a candidate, and print the refined BlogIdea",
     )
     parser.add_argument(
         "--full-manual",
         action="store_true",
-        help="Refine one candidate, then run the Writer -> Tag -> Image pipeline",
+        help="Load one candidate, refine it, then run the Writer -> Tag -> Image pipeline",
     )
     parser.add_argument("--source", help="Source input used with --refine")
     parser.add_argument("--candidate-id", help="Candidate number or id used with --refine")
@@ -111,10 +160,12 @@ def main() -> None:
     if args.full_manual:
         if not args.source or not args.candidate_id:
             parser.error("--full-manual requires --source and --candidate-id")
+        expansion = load_latest_expansion(args.source)
+        candidate = select_candidate(expansion, args.candidate_id)
         idea, content_plan, result = run_refined_manual_workflow(
             args.source,
-            args.candidate_id,
-            args.revision,
+            revision_request=args.revision,
+            candidate=candidate,
         )
         print(json.dumps({
             "refined_blog_idea": idea.model_dump(mode="json"),
@@ -125,13 +176,16 @@ def main() -> None:
 
     if args.expand:
         result = IdeaGenerator().expand(args.expand)
+        save_latest_expansion(result)
         print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
         return
 
     if args.refine:
         if not args.source or not args.candidate_id:
             parser.error("--refine requires --source and --candidate-id")
-        idea = refine_from_source(args.source, args.candidate_id, args.revision)
+        expansion = load_latest_expansion(args.source)
+        candidate = select_candidate(expansion, args.candidate_id)
+        idea = refine_selected_candidate(args.source, candidate, args.revision)
         print(json.dumps(idea.model_dump(mode="json"), ensure_ascii=False, indent=2))
         return
 

@@ -15,6 +15,13 @@ from models.schemas import BlogIdea, BlogPost, ContentPlan, QCIssue, QCResult
 class QCAgent:
     """Inspect final content without rewriting or regenerating it."""
 
+    _CLAIM_AUTHORITY_POLICY = {
+        "PERSONAL_FACT": "raw_source_only",
+        "GENERAL_SUGGESTION": "allowed within the requested topic when clearly reader-facing or conditional",
+        "EXTERNAL_CLAIM": "raw_source or supplied research evidence only",
+        "EDITORIAL_TRANSITION": "allowed unless promoted into a factual or personal claim",
+    }
+
     _METADATA = (
         "검색 의도", "seo", "키워드 선정 이유", "브랜드 평가", "fit_score",
         "critic score", "ai 평가", "내부 agent", "prompt", "생성 과정",
@@ -246,6 +253,7 @@ class QCAgent:
             "refined_blog_idea": build_safe_editorial_context(idea, source),
             "blog_post": post.model_dump(mode="json"),
             "content_plan": content_plan.model_dump(mode="json") if content_plan else None,
+            "claim_authority_policy": self._CLAIM_AUTHORITY_POLICY,
             "deterministic_issues": [issue.model_dump(mode="json") for issue in deterministic],
         }
         semantic = self.client.generate_structured(self.prompt, QCResult, payload)

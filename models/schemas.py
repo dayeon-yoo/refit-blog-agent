@@ -69,6 +69,13 @@ class IdeaCandidate(RIFITBaseModel):
     brief_description: str
 
 
+class RequiredInclusion(RIFITBaseModel):
+    """Source-explicit part of the requested whole, with its own provenance."""
+
+    value: str
+    evidence: List[str] = Field(default_factory=list)
+
+
 class SourceIntent(RIFITBaseModel):
     """Positive semantic anchor used only during idea expansion."""
 
@@ -76,12 +83,13 @@ class SourceIntent(RIFITBaseModel):
     core_subject_evidence: List[str] = Field(default_factory=list)
     core_action_or_message: str
     core_action_evidence: List[str] = Field(default_factory=list)
-    core_question_or_claim: str
+    core_question_or_claim: str = Field(description="Preserve an explicit source question/claim; otherwise return an empty string.")
     core_question_evidence: List[str] = Field(default_factory=list)
     explicit_source_details: List[str] = Field(default_factory=list)
     detail_evidence: List[str] = Field(default_factory=list)
     explicit_contrasts: List[str] = Field(default_factory=list)
     contrast_evidence: List[str] = Field(default_factory=list)
+    required_inclusions: List[RequiredInclusion] = Field(default_factory=list)
 
 
 class InternalIdeaExpansion(RIFITBaseModel):

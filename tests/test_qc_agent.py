@@ -1,6 +1,6 @@
 from agents.qc_agent import QCAgent
 from llm.client import MockLLMClient
-from models.schemas import BlogIdea, BlogPost, ImagePlan, ImagePrompt
+from models.schemas import BlogIdea, BlogPost, ImagePlan, ImagePrompt, QCIssue, QCResult
 
 
 def make_idea() -> BlogIdea:
@@ -40,6 +40,58 @@ def test_clean_experience_passes_without_blocking_issue():
 
     assert result.status == "PASS"
     assert result.issues == []
+
+
+def test_qc_prompt_declares_claim_authority_policy_and_evidence_contract():
+    agent = QCAgent(MockLLMClient())
+    prompt = agent.prompt
+
+    for claim_type in ("PERSONAL_FACT", "GENERAL_SUGGESTION", "EXTERNAL_CLAIM", "EDITORIAL_TRANSITION"):
+        assert claim_type in prompt
+    assert "raw_source is the factual and experiential authority" in prompt
+    assert "content_plan.writing_script is structure and grounding guidance only" in prompt
+    assert "Never use a sentence copied from raw_source" in prompt
+
+
+def test_qc_payload_marks_editorial_context_and_plan_as_non_factual():
+    client = MockLLMClient()
+    source = "오슬로에서 산 빈티지 체크셔츠로 출근 코디를 해봤다."
+
+    QCAgent(client).check(
+        source,
+        make_idea(),
+        make_post("오슬로에서 산 체크셔츠로 출근 코디를 해봤습니다."),
+    )
+
+    payload = client.calls[0]["payload"]
+    assert payload["raw_source"] == source
+    assert payload["claim_authority_policy"]["PERSONAL_FACT"] == "raw_source_only"
+    assert "research evidence" in payload["claim_authority_policy"]["EXTERNAL_CLAIM"]
+    assert "summary" not in payload["refined_blog_idea"]
+
+
+def test_semantic_evidence_cannot_point_to_raw_source_only_text():
+    source = "오슬로에서 산 빈티지 체크셔츠로 출근 코디를 해봤다."
+    post = make_post("체크셔츠 코디를 소개합니다.")
+
+    def response_factory(_prompt, _schema, _payload):
+        return QCResult(
+            status="BLOCK",
+            issues=[QCIssue(
+                category="source_grounding",
+                severity="error",
+                message="지원되지 않는 개인 경험",
+                evidence=source,
+                suggestion="원본을 확인하세요.",
+            )],
+        )
+
+    result = QCAgent(MockLLMClient(response_factory=response_factory)).check(
+        source, make_idea(), post
+    )
+
+    issue = next(issue for issue in result.issues if issue.category == "source_grounding")
+    assert issue.evidence == ""
 
 
 def test_fabricated_personal_reaction_is_blocked():

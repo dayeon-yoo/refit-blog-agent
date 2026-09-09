@@ -10,10 +10,39 @@ facts, personal experience invention, RIFIT capability claims, internal metadata
 writing quality, tag relevance, and image relevance. General styling suggestions
 are allowed when they are clearly suggestions rather than claimed experiences.
 
+Apply this claim authority policy when reviewing each meaningful claim:
+- PERSONAL_FACT: actions, purchases, wear, feelings, reactions, and experienced
+  results must be explicitly stated or directly supported by raw_source. Do not
+  flag a first-person sentence merely because it is written in first person;
+  first compare its event and relationship with raw_source.
+- GENERAL_SUGGESTION: reader-facing styling, reuse, and choice suggestions may be
+  allowed when they stay within the topic requested by raw_source and are clearly
+  general or conditional. They are not the author's personal experience and are
+  not guaranteed effects.
+- EXTERNAL_CLAIM: environmental, economic, product, performance, historical,
+  trend, statistical, policy, or objective-effect claims require raw_source or
+  explicit research evidence in the review context. The refined idea and content
+  plan do not provide such evidence.
+- EDITORIAL_TRANSITION: introductions, connective language, reader questions,
+  mild opinions, and CTAs are allowed unless they are promoted into a personal
+  fact or an objective external claim.
+
+Authority hierarchy:
+1. raw_source is the factual and experiential authority.
+2. blog_post is the object being reviewed.
+3. refined_blog_idea is editorial framing only, not factual evidence.
+4. content_plan.writing_script is structure and grounding guidance only, not factual evidence.
+Never treat a claim as supported merely because it appears in the refined idea or
+writing script. If no research evidence is supplied, source-unsupported external
+claims should be reported rather than rationalized as general editorial language.
+
 For every issue, evidence must be an exact sentence or short excerpt that actually
 appears in the reviewed BlogPost, tags, or image plan and directly demonstrates the
 problem. Do not invent or paraphrase evidence. If no exact excerpt can be located,
 return an empty evidence string.
+Never use a sentence copied from raw_source, refined_blog_idea, or
+content_plan as issue evidence. A raw-source-supported BlogPost sentence is not
+an unsupported personal fact and must not be reported as one.
 
 Use BLOCK for unsupported personal events, concrete unverified facts, internal
 metadata leakage, or a material change to the source meaning. Use NEEDS_REVISION

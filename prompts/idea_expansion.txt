@@ -4,6 +4,25 @@ Treat the user's one-line idea as the source of truth. Preserve its central subj
 observation, question, or concern. Propose 3 to 5 genuinely different content
 candidates, not cosmetic rewrites of one headline.
 
+Candidate card contract:
+- title: a publishable Korean article headline about this specific topic, not a
+  label about processing a memo or conveying source text.
+- perspective: a short reader-facing subtitle. Express the candidate's distinct
+  editorial emphasis in a meaningful phrase, not a generic workflow label.
+- brief_description: one or two concrete sentences explaining the article's
+  direction and progression. Develop the source into a usable brief instead of
+  copying the input or describing the act of writing. Preserve any required parts.
+- key_question: the substantive reader question the article addresses, not a
+  question about how to communicate the source. This is an editorial question for
+  the proposed article, not evidence that raw_source contained an explicit question.
+- content_format: retain the source-compatible article form. Keep the same form
+  across candidates when requested; differentiate emphasis, not invented topics.
+Offer three genuinely selectable article directions when three are requested.
+Each subtitle and brief must explain why a reader would choose that version.
+Do not make cosmetic permutations of the same headline and repeated descriptions.
+Concrete editorial development is welcome inside the requested scope; fabricated
+personal facts, external effects, and unsolicited changes to the whole are not.
+
 The input is raw material, not a finished title. First infer the core subject,
 any first-hand experience, and the concrete observations or questions. Do not
 copy the full input, parenthetical notes, labels, or diary-style prefixes into a
@@ -19,8 +38,9 @@ SourceIntent provenance contract:
 - Identify contiguous evidence spans in raw_source first, then write the semantic
   interpretation. Every non-empty evidence field must be copied exactly from
   raw_source; do not use summaries, paraphrases, or inferred sentences as evidence.
-- Provide evidence for the core subject, core action/message, and core
-  question/claim. `explicit_source_details` and `explicit_contrasts` may contain
+- Provide evidence for the core subject and core action/message. Provide core
+  question/claim evidence only when that interpretation is non-empty.
+  `explicit_source_details` and `explicit_contrasts` may contain
   only directly stated source material and must include corresponding evidence.
 - Evidence proves only provenance, not semantic correctness. Still self-review
   the interpretation against the source before returning it. Do not add a purpose,
@@ -35,6 +55,40 @@ the roles of these source elements in every candidate. Do not promote one
 supporting detail, example, option, route, audience, or channel into the whole
 article, and do not replace the core with a broader related thesis.
 
+Explicit composition / whole-part contract:
+- WHOLE remains WHOLE. PART remains PART. The core_subject,
+  core_action_or_message, and core_question_or_claim describe the whole article
+  the user requests, including its explicitly requested composition.
+- In required_inclusions, preserve both its content and
+  its assigned role: one item within a list, one section within an article, one
+  tip within an experience narrative, or one example within a comparison.
+  Do not reduce that detail to isolated topic nouns. Evidence should retain the
+  source wording that establishes its role, not just the child's name.
+- required_inclusions is a list of internal items with value and evidence. Each
+  value is a source-explicit required part of the whole; its evidence is a
+  non-empty list of exact contiguous raw-source spans. Use an empty list when
+  the source does not require a child. Do not invent inclusions to fill the field.
+  Keep ordinary stated details in explicit_source_details, not in inclusions.
+  Do not mechanically duplicate the same content in both fields. Inclusions are
+  not inferred benefits, effects, purposes, recommendations, or new relationships.
+- Each candidate is an alternative proposal for the whole article. Preserve the
+  parent in its title, key_question, and brief_description; keep the requested
+  child and its subordinate role in the brief. A child may inform framing but
+  must not replace the parent or become a separate candidate for each child.
+- Explicit composition is source fidelity: retain requested item counts and
+  whole-article organization, not just topical overlap. Vary hooks, wording,
+  emphasis, entry points, or ordering only within that composition.
+- Check two failures separately: parent-format loss (the requested whole
+  structure disappears) and child promotion (a part replaces the whole topic).
+- Explicit user-requested narrowing is allowed: when the raw source requests
+  that a former child become a standalone article, that child is now the parent.
+  Follow the user's requested hierarchy, not an unconditional ban on narrowing.
+  A former child requested as a standalone topic belongs in the core fields,
+  not in required_inclusions merely because it used to be a part.
+- This rule is independent of content family. Preserve explicit guide,
+  comparison, experience, editorial, and informational requests; organize a
+  rough memo within its stated scope without inventing a composition.
+
 SourceIntent is the smallest faithful semantic representation of the raw source,
 not content strategy. It must preserve the
 source's hierarchy without adding a purpose, benefit, background motivation, or
@@ -46,6 +100,12 @@ reader outcome that the source does not state. In particular:
   statement, rhetorical question, opinion, explicit information request, or
   explicit procedural request. Do not rewrite every question into "어떻게 하면
   될까?" or another guide task.
+- Question-less sources are valid. If raw_source contains no explicit question
+  or claim, return core_question_or_claim="" and core_question_evidence=[]. Do
+  not invent a question or use punctuation as a placeholder. Candidate generation
+  does not require a hypothetical question in SourceIntent. Preserve real source
+  questions and claims with evidence; their presence is a semantic interpretation,
+  not a requirement to fill this field for every topic request or rough memo.
 - explicit_source_details may contain only details directly stated in the raw
   source. Do not add plausible purposes, benefits, background, space-saving
   goals, future purchases, or expected reader outcomes.
@@ -57,7 +117,8 @@ Do not make SourceIntent sound more complete by making it more procedural. If th
 source contains an observation followed by a concern and a proposed direction,
 keep that editorial/rhetorical shape even when a guide would be easier to write.
 
-Each candidate must use a distinct perspective or content format when possible.
+Each candidate must use a distinct perspective or content format when compatible
+with the requested whole-article scope and composition.
 Do not fall back to generic wardrobe organization, donation, or recycling topics
 unless the user's input directly asks about them. Include a concrete key question
 and a brief description for every candidate.
@@ -80,7 +141,8 @@ Experience rule:
   already did so.
 
 Editorial distinctness rule:
-Treat each candidate as a different article brief for the Writer. Do not merely
+Treat each candidate as a different article brief for the Writer within the same
+requested whole. Do not merely
 change the ending of the title. For every candidate, make the key_question,
 brief_description, and expected body progression meaningfully different. State
 what the reader will learn or decide, and avoid reusing the same sequence of
@@ -95,6 +157,15 @@ confirm that no new comparison, research task, factual requirement, authority,
 or broader thesis was introduced; and confirm that the candidate stays within
 the source's semantic scope. Revise any candidate that fails this review. Do not
 return the review or reasoning in the JSON output.
+
+Unspecified siblings remain unspecified during Expansion. When the user requests
+a composition but supplies only some items, preserve that whole composition and
+the required_inclusions in every candidate's brief without deciding the remaining
+items. Describe the remaining composition at the scope level only. Leave concrete
+unspecified sibling selection to the subsequent Planner, not to candidate diversity.
+Do not present invented sibling sets as user-supplied content or settle them in
+the title, question, or brief. Every candidate must retain every required inclusion
+as an internal part rather than become a child-only article.
 
 Fidelity has priority over diversity: raw source fidelity comes first, then the
 SourceIntent semantic core, then candidate usefulness, and only then candidate
@@ -151,19 +222,30 @@ Evidence and audience rule:
 
 Generation order for this structured response:
 1. Read only the raw source and identify contiguous evidence spans for the core
-   subject, action/message, and question/claim.
+   subject, action/message, and question/claim when one exists.
 2. Write a minimal SourceIntent from those spans, including explicit source
    details and explicit contrasts only when they are grounded in the raw source.
-3. Treat that SourceIntent as a fixed semantic anchor for this response.
-4. Generate candidates that share the same core intent. Vary only the hook,
-   emphasis, framing, reader question, structure, or entry point.
-5. Silently self-review the SourceIntent itself: remove any inferred purpose,
+   Place required child content in required_inclusions with its own evidence.
+3. Silently self-review the SourceIntent itself: remove any inferred purpose,
    benefit, background, procedural task, or changed question role before using it
-   as an anchor.
+   as an anchor. Confirm that core fields represent the whole article, no child,
+   section, or example became the core subject, and explicit details retain their
+   assigned roles. Repair any hierarchy loss against the raw source.
+   Check that no required inclusion replaced the whole in core_action_or_message,
+   no absent question/claim was invented, and no unspecified sibling was decided.
+4. Treat that reviewed SourceIntent as a fixed semantic anchor for this response.
+5. Generate candidates that share the same core intent and requested composition.
+   Vary only the hook, emphasis, framing, reader question, ordering, or entry point.
 6. Silently self-review each candidate against the corrected SourceIntent. Do not
    promote supporting details, add a new task or topic, change an explicit
    relationship, or leave the source scope merely to make candidates look
-   different.
+   different. Check parent-format loss and child promotion separately: is each
+   candidate still a proposal for the whole article; is the parent retained in
+   title, question, and brief; are required parts still parts; did diversity
+   change the hierarchy? Honor explicit user-requested narrowing. Repair failures
+   within this same response before returning, without outputting the review.
+   Verify every required inclusion remains a part in every candidate's brief,
+   and no unspecified sibling content was finalized to make the brief concrete.
 7. Return the SourceIntent and candidates in the requested structured response.
 
 The SourceIntent is a positive interpretation of the source, not a blacklist or

@@ -4,6 +4,15 @@ Turn the selected IdeaCandidate into a publication-ready BlogIdea while preservi
 the original user idea and the selected candidate's perspective, content format,
 and key question. Apply the optional revision request when present.
 
+Treat the raw source as the highest-authority semantic and factual contract.
+The selected candidate supplies editorial framing, title direction, format, and
+entry point, but it is not evidence for a more specific use, situation, benefit,
+trend, or personal fact that the source does not state. If the candidate narrows
+the source into an unsupported detail, generalize that detail back to the nearest
+source-supported subject, action, and question while preserving the candidate's
+editorial framing. Do not force an unsupported detail into the refined question,
+angle, summary, or outline.
+
 Treat the source input, selected candidate, and revision request as one content
 contract. The revision request adds a condition to the existing plan; it must not
 replace the source problem or the candidate's direction. If the source expresses
@@ -12,7 +21,10 @@ or "A or B", preserve that relationship in the outline and explain both sides
 before moving to a decision or action. Do not reduce a comparison or choice to
 an explanation of only one option.
 
-Preserve the source's content action and format as well as its nouns. If the source
+Preserve the source's content action and format as well as its nouns. Candidate
+questions are useful entry points, not independent factual authorities. Keep the
+question's source-supported core, but do not preserve a candidate-only narrowing
+when the raw source does not support it. If the source
 describes a personal diary, purchase, visit, wearing attempt, or other stated
 experience, keep the refinement in an experience, diary, or review direction; do
 not turn it into a broad history or trend analysis. If it asks the reader to find
@@ -32,6 +44,9 @@ statistics, expert authority, or personal experience. If the topic naturally
 connects to clothing reuse, donation, resale, collection, or circulation, describe
 that connection as an understated editorial context, not an advertisement. Do not
 force an environmental or brand message when the source does not support it.
+Every outline item must remain within the raw source's subject, action, experience,
+claim, and relationship scope. Do not use the outline to expand a candidate-only
+detail into a new use case, benefit, trend, or event.
 
 For a trend, style, or opinion-like source, preserve the user's observation,
 question, contrast, and claim. Do not turn it into a practical shopping guide,

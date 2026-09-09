@@ -22,6 +22,7 @@ from models.schemas import (
     IdeaCandidate,
     IdeaExpansionResult,
     InternalIdeaExpansion,
+    RequiredInclusion,
     SourceIntent,
 )
 from orchestrator.workflow import run_manual_workflow
@@ -77,6 +78,15 @@ def test_expansion_prompt_prioritizes_fidelity_over_format_diversity():
     assert "Content format is not an independent diversity generator" in prompt
     assert "explicitly requests a method" in prompt
     assert "self-review the SourceIntent itself" in prompt
+
+
+def test_candidate_card_contract_requires_reader_facing_specific_briefs():
+    prompt = IdeaGenerator(llm_client=MockLLMClient()).expansion_prompt
+    assert "publishable Korean article headline" in prompt
+    assert "short reader-facing subtitle" in prompt
+    assert "one or two concrete sentences" in prompt
+    assert "not evidence that raw_source contained an explicit question" in prompt
+    assert "not invented topics" in prompt
 
 
 def test_expansion_recovery_reuses_fixed_initial_source_intent():
@@ -542,6 +552,169 @@ def test_expansion_prompt_defines_semantic_hierarchy_and_self_review():
     assert "different hooks, emphasis, framing" in prompt
     assert "silently review every" in prompt
     assert "semantic scope" in prompt
+
+
+def test_expansion_composition_contract_reviews_intent_before_candidates():
+    prompt = IdeaGenerator(llm_client=MockLLMClient()).expansion_prompt
+
+    assert "WHOLE remains WHOLE. PART remains PART." in prompt
+    assert "preserve both its content and" in prompt
+    assert "its assigned role" in prompt
+    assert "alternative proposal for the whole article" in prompt
+    assert "retain requested item counts" in prompt
+    assert "parent-format loss" in prompt
+    assert "child promotion" in prompt
+    assert "Explicit user-requested narrowing is allowed" in prompt
+    assert "independent of content family" in prompt
+    order = prompt.split("Generation order for this structured response:")[1]
+    assert order.index("self-review the SourceIntent itself") < order.index("Generate candidates")
+    assert "title, question, and brief" in order
+    assert "within this same response" in order
+
+
+@pytest.mark.parametrize(
+    "source,parent,child,content_format",
+    [
+        (
+            "비 오는 날 집에서 즐길 활동 네 가지를 소개하고 싶다. 한 항목으로 독서를 넣고 싶다.",
+            "비 오는 날 집에서 즐길 활동 네 가지", "한 항목으로 독서를 넣고 싶다.", "아이디어 모음",
+        ),
+        (
+            "동네 도서관을 소개하는 글을 쓰고 싶다. 한 섹션에서 열람실을 다루고 싶다.",
+            "동네 도서관 소개", "한 섹션에서 열람실을 다루고 싶다.", "정보",
+        ),
+        (
+            "기차 여행을 다녀왔다. 여행 경험을 쓰면서 짐 챙기는 팁 하나도 넣고 싶다.",
+            "기차 여행 경험", "짐 챙기는 팁 하나도 넣고 싶다.", "경험담",
+        ),
+        (
+            "종이책과 전자책을 비교하고 싶다. 비교 글 안에 통근 독서 사례 하나를 넣고 싶다.",
+            "종이책과 전자책 비교", "통근 독서 사례 하나를 넣고 싶다.", "비교",
+        ),
+        (
+            "동네 도서관 소개를 생각했지만 이번에는 열람실 부분만 별도 글로 쓰고 싶다.",
+            "열람실 소개", "열람실 부분만 별도 글로 쓰고 싶다.", "정보",
+        ),
+        (
+            "자전거 타이어 상태 확인 방법을 단계별 가이드로 정리하고 싶다.",
+            "자전거 타이어 상태 확인 방법", "단계별 가이드로 정리하고 싶다.", "가이드",
+        ),
+    ],
+    ids=["list-item", "article-section", "experience-tip", "comparison-example", "explicit-narrowing", "guide"],
+)
+def test_composition_contract_delivery_and_valid_fixture_compatibility(source, parent, child, content_format):
+    # Scripted outputs test contract delivery and compatibility, not LLM semantics.
+    intent = SourceIntent(
+        core_subject=parent, core_subject_evidence=[source],
+        core_action_or_message=parent, core_action_evidence=[source],
+        core_question_or_claim="", core_question_evidence=[],
+        required_inclusions=(
+            [] if content_format == "가이드" or parent == "열람실 소개"
+            else [RequiredInclusion(value=child, evidence=[child])]
+        ),
+    )
+    candidates = [
+        IdeaCandidate(
+            candidate_id=str(index), title=f"{parent}: {hook}",
+            perspective=hook, content_format=content_format,
+            key_question=f"{parent}을 어떻게 이야기할까?",
+            brief_description=source,
+        )
+        for index, hook in enumerate(["첫 이야기", "다르게 바라보기", "흐름 따라 읽기"], 1)
+    ]
+    response = InternalIdeaExpansion(source_input=source, source_intent=intent, candidates=candidates)
+
+    def respond(prompt, schema, payload):
+        assert "Explicit composition / whole-part contract" in prompt
+        assert 'core_question_or_claim="" and core_question_evidence=[]' in prompt
+        assert "Unspecified siblings remain unspecified during Expansion" in prompt
+        assert "subsequent Planner" in prompt
+        assert payload["user_input"] == source
+        assert schema is InternalIdeaExpansion
+        return response
+
+    client = MockLLMClient(response_factory=respond)
+    result = IdeaGenerator(llm_client=client).expand(source)
+
+    assert len(client.calls) == 1
+    assert result.candidates == candidates
+    assert all(parent in candidate.title and child in candidate.brief_description for candidate in result.candidates)
+    assert set(result.model_dump()) == {"source_input", "candidates"}
+
+
+@pytest.mark.parametrize("source", ["동네 도서관을 소개하고 싶다.", "기차 여행을 다녀왔다."])
+def test_mock_questionless_intent_uses_empty_question_without_recovery(source):
+    response = MockLLMClient._internal_idea_expansion_response({"user_input": source})
+    intent = SourceIntent.model_validate(response["source_intent"])
+    assert intent.core_question_or_claim == ""
+    assert intent.core_question_evidence == []
+    assert intent.required_inclusions == []
+    IdeaGenerator._validate_source_intent_provenance(source, intent)
+    client = MockLLMClient()
+    IdeaGenerator(llm_client=client).expand(source)
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize("source", ["도서관은 언제 열릴까?", "도서관은 누구나 이용할 수 있어야 한다."])
+@pytest.mark.parametrize("evidence", [[], ["원문 밖의 근거"]])
+def test_explicit_question_and_claim_need_provenance_and_recover(source, evidence):
+    valid = InternalIdeaExpansion.model_validate(
+        MockLLMClient._internal_idea_expansion_response({"user_input": source})
+    )
+    valid.source_intent.core_question_or_claim = source
+    valid.source_intent.core_question_evidence = [source]
+    initial = valid.model_copy(deep=True)
+    initial.source_intent.core_question_evidence = evidence
+    IdeaGenerator._validate_source_intent_provenance(source, valid.source_intent)
+    client = MockLLMClient(response_factory=lambda *_: initial if len(client.calls) == 1 else valid)
+    result = IdeaGenerator(llm_client=client).expand(source)
+    assert result.candidates == valid.candidates
+    assert len(client.calls) == 2
+    assert client.calls[1]["schema"] is InternalIdeaExpansion
+    assert "core_question_or_claim" in str(client.calls[1]["payload"]["source_intent_provenance_issues"])
+
+
+@pytest.mark.parametrize("evidence", [[], [""], ["원문에 없는 근거"]])
+@pytest.mark.parametrize("corrected_valid", [True, False])
+def test_required_inclusion_provenance_uses_bounded_full_correction(evidence, corrected_valid):
+    source = "동네 도서관 소개 글에 열람실을 한 부분으로 넣고 싶다."
+    valid = InternalIdeaExpansion.model_validate(
+        MockLLMClient._internal_idea_expansion_response({"user_input": source})
+    )
+    valid.source_intent.required_inclusions = [
+        RequiredInclusion(value="열람실을 한 부분으로 포함", evidence=["열람실을 한 부분으로 넣고 싶다."])
+    ]
+    initial = valid.model_copy(deep=True)
+    initial.source_intent.required_inclusions[0].evidence = evidence
+    client = MockLLMClient(response_factory=lambda *_: valid if corrected_valid and len(client.calls) == 2 else initial)
+    generator = IdeaGenerator(llm_client=client)
+    if corrected_valid:
+        assert generator.expand(source).candidates == valid.candidates
+    else:
+        with pytest.raises(ValueError, match="required_inclusions"):
+            generator.expand(source)
+    assert len(client.calls) == 2
+    assert all(call["schema"] is InternalIdeaExpansion for call in client.calls)
+    assert "fixed_source_intent" not in client.calls[1]["payload"]
+
+
+def test_candidate_recovery_keeps_validated_inclusions_and_question_absence():
+    source = "동네 도서관 소개 글에 열람실을 한 부분으로 넣고 싶다."
+    valid = InternalIdeaExpansion.model_validate(
+        MockLLMClient._internal_idea_expansion_response({"user_input": source})
+    )
+    valid.source_intent.required_inclusions = [RequiredInclusion(value="열람실 소개 부분", evidence=[source])]
+    initial = valid.model_copy(deep=True)
+    initial.candidates[0].title = source
+    replacement = IdeaExpansionResult(source_input=source, candidates=[valid.candidates[0]])
+    client = MockLLMClient(response_factory=lambda *_: initial if len(client.calls) == 1 else replacement)
+    result = IdeaGenerator(llm_client=client).expand(source)
+    assert len(client.calls) == 2
+    assert client.calls[1]["schema"] is IdeaExpansionResult
+    assert client.calls[1]["payload"]["fixed_source_intent"] == valid.source_intent.model_dump(mode="json")
+    assert result.candidates == valid.candidates
+    assert "required_inclusions" not in result.model_dump_json()
+    assert "source_intent" not in result.model_dump_json()
 
 
 def test_expansion_prompt_preserves_core_topic_over_supporting_options():

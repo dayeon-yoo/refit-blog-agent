@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from types import SimpleNamespace
 
+import pytest
+
 import agents.writer_agent as writer_agent_module
 from agents.writer_agent import WriterAgent
 from llm.client import MockLLMClient
@@ -196,6 +198,99 @@ def test_writer_prompt_requires_outline_fidelity_and_qualified_factual_language(
     assert "기부처에 따라 기준이 다를 수 있으니 확인해보세요" in prompt
     assert "Do not invent institutions, policies, statistics" in prompt
     assert "cta should be one short, non-repetitive action suggestion" in prompt
+
+
+def test_writer_prompt_defines_source_grounded_factual_whitelist_and_suggestion_boundary():
+    prompt = WriterAgent(MockLLMClient()).prompt
+
+    assert "Treat raw_source as a factual whitelist" in prompt
+    assert "writing_script as authority for ordering and emphasis only" in prompt
+    assert "Omission is safer than" in prompt
+    assert "Never convert that suggestion into" in prompt
+    assert "product adjectives or material properties" in prompt
+    assert "environmental, economic, trend," in prompt
+    assert "social-impact claim" in prompt
+
+
+def test_source_grounded_payload_separates_framing_metadata_from_factual_source():
+    idea = _experience_writer_idea()
+    idea.idea.angle = "비즈니스 캐주얼 아우터 활용과 지속 가능성의 장점"
+    idea.idea.summary = "오슬로 매장 분위기와 구매 이유, 동료 반응을 자세히 소개합니다."
+    idea.idea.key_question = "어떤 아우터가 비즈니스 캐주얼에 가장 좋을까요?"
+    idea.idea.outline = ["매장 분위기", "실제 슬랙스 착장", "환경 효과"]
+    idea.idea.rifit_connection = "리핏에서 빈티지 상품을 구매하고 아우터를 추천한다고 안내"
+    writer = writer_with_response(
+        idea.idea.title,
+        "오슬로에서 산 체크셔츠로 인턴 출근 코디를 해봤습니다. "
+        "리핏은 의류 순환이라는 맥락에서 생각해볼 수 있습니다.",
+        idea.idea.keyword,
+    )
+    writer.write(
+        idea,
+        raw_source="오슬로에서 체크셔츠를 샀고 인턴 출근룩으로 입어봤다.",
+        content_plan=ContentPlan(writing_script="명시된 구매와 착용 경험만 사용합니다."),
+    )
+
+    payload = writer.client.calls[0]["payload"]
+    for key in ("editorial_context", "refined_blog_idea", "content_contract"):
+        context = payload[key]
+        assert "summary" not in context
+        assert "outline" not in context
+        assert "key_question" not in context
+        assert "angle" not in context
+        assert "rifit_connection" not in context
+    assert payload["content_contract"]["metadata_role"] == "editorial framing only"
+    assert payload["raw_source"] == "오슬로에서 체크셔츠를 샀고 인턴 출근룩으로 입어봤다."
+
+
+def test_writer_grounded_mode_payload_marks_script_as_structure_only():
+    idea = _experience_writer_idea()
+    client = MockLLMClient()
+
+    WriterAgent(client).write(
+        idea,
+        raw_source="오슬로에서 체크셔츠를 샀고 인턴 출근룩으로 입어봤다.",
+        content_plan=ContentPlan(
+            writing_script="명시된 구매와 착용 경험만 순서대로 서술합니다."
+        ),
+    )
+
+    payload = client.calls[0]["payload"]
+    contract = payload["content_contract"]
+    assert contract["factual_authority"] == "raw_source only"
+    assert contract["writing_script_role"] == "structure and ordering only"
+    assert payload["raw_source"] in contract["raw_source"]
+
+
+def test_writer_source_grounded_contract_declares_claim_authority_policy():
+    idea = _experience_writer_idea()
+    client = MockLLMClient()
+
+    WriterAgent(client).write(
+        idea,
+        raw_source="오슬로에서 산 체크셔츠로 인턴 출근룩을 입어봤다.",
+        content_plan=ContentPlan(writing_script="명시된 경험과 일반 제안만 구분합니다."),
+    )
+
+    policy = client.calls[0]["payload"]["content_contract"]["claim_authority_policy"]
+    assert policy["PERSONAL_FACT"] == "raw_source_only"
+    assert "reader-facing" in policy["GENERAL_SUGGESTION"]
+    assert "research_context" in policy["EXTERNAL_CLAIM"]
+    assert "not presented as an objective fact" in policy["EDITORIAL_TRANSITION"]
+
+
+def test_writer_prompt_and_correction_contract_preserve_claim_authority_boundary():
+    writer = WriterAgent(MockLLMClient())
+    prompt = writer.prompt
+    correction = writer._grounding_correction_prompt()
+
+    for text in (prompt, correction):
+        assert "PERSONAL_FACT" in text
+        assert "GENERAL_SUGGESTION" in text
+        assert "EXTERNAL_CLAIM" in text
+        assert "raw_source" in text
+    assert "shorten the article" in prompt
+    assert "must not become a personal claim" in correction
 
 
 def test_writer_prompt_covers_contrast_connection_and_observable_donation_criteria():
@@ -490,6 +585,110 @@ def test_writer_allows_material_as_general_suggestion_or_condition():
         assert writer.write(idea).content
 
 
+def test_writer_does_not_false_positive_on_short_marker_inside_general_word():
+    idea = _experience_writer_idea()
+    writer = writer_with_response(
+        idea.idea.title,
+        "오슬로에서 산 체크셔츠로 출근 코디를 해봤습니다. "
+        "이 체크셔츠는 다른 옷과 잘 어울리기 때문에 일반적인 코디 제안으로 소개할 수 있습니다.",
+        idea.idea.keyword,
+    )
+
+    assert writer.write(
+        idea,
+        raw_source="오슬로에서 산 체크셔츠로 출근 코디를 해봤다.",
+    ).content
+
+
+def test_writer_valid_grounded_draft_does_not_trigger_correction():
+    client = MockLLMClient()
+    idea = _experience_writer_idea()
+
+    WriterAgent(client).write(
+        idea,
+        raw_source="오슬로에서 산 체크셔츠로 출근 코디를 해봤다.",
+        content_plan=ContentPlan(writing_script="명시된 경험만 사용합니다."),
+    )
+
+    assert len(client.calls) == 1
+
+
+def test_writer_corrects_multiple_grounding_issues_once():
+    idea = _experience_writer_idea()
+    raw_source = "오슬로에서 산 체크셔츠로 출근 코디를 해봤다."
+    invalid = BlogPost(
+        title=idea.idea.title,
+        keyword=idea.idea.keyword,
+        content=(
+            "## 오슬로에서 산 빈티지 체크셔츠로 출근 코디를 해봤다\n\n"
+            "오슬로에서 산 체크셔츠로 출근 코디를 해봤습니다.\n\n"
+            "첫 출근이라 어떤 옷을 입을지 고민했고 동료들이 칭찬했습니다.\n\n"
+            "진청색 청바지도 실제로 입었습니다."
+        ),
+        summary=raw_source,
+        cta="오늘 한 가지부터 적용해 보세요.",
+    )
+    corrected = BlogPost(
+        title=idea.idea.title,
+        keyword=idea.idea.keyword,
+        content=(
+            "## 오슬로에서 산 빈티지 체크셔츠로 출근 코디를 해봤다\n\n"
+            "오슬로에서 산 체크셔츠로 출근 코디를 해봤습니다.\n\n"
+            "체크셔츠는 슬랙스와 매치해볼 수 있어요."
+        ),
+        summary=raw_source,
+        cta="오늘 한 가지부터 적용해 보세요.",
+    )
+
+    def response_factory(_prompt, _schema, _payload):
+        return invalid if len(client.calls) == 1 else corrected
+
+    client = MockLLMClient(response_factory=response_factory)
+    result = WriterAgent(client).write(
+        idea,
+        raw_source=raw_source,
+        content_plan=ContentPlan(writing_script="명시된 경험만 사용합니다."),
+    )
+
+    assert result == corrected
+    assert len(client.calls) == 2
+    assert client.calls[1]["payload"]["correction_mode"] == "controlled_grounding_correction"
+    assert len(client.calls[1]["payload"]["grounding_issues"]) >= 2
+    assert client.calls[1]["payload"]["previous_draft"]["content"] == invalid.content
+
+
+def test_writer_stops_after_one_failed_grounding_correction():
+    idea = _experience_writer_idea()
+    raw_source = "오슬로에서 산 체크셔츠로 출근 코디를 해봤다."
+    invalid = BlogPost(
+        title=idea.idea.title,
+        keyword=idea.idea.keyword,
+        content="오슬로에서 산 체크셔츠로 출근 코디를 해봤습니다. 첫 출근이라 고민했습니다.",
+        summary=raw_source,
+        cta="오늘 한 가지부터 적용해 보세요.",
+    )
+
+    client = MockLLMClient(response_factory=lambda _prompt, _schema, _payload: invalid)
+    with pytest.raises(ValueError, match="unsupported personal experience"):
+        WriterAgent(client).write(idea, raw_source=raw_source)
+
+    assert len(client.calls) == 2
+
+
+def test_writer_generation_failure_does_not_trigger_correction():
+    def response_factory(_prompt, _schema, _payload):
+        raise RuntimeError("network failure")
+
+    client = MockLLMClient(response_factory=response_factory)
+    with pytest.raises(RuntimeError, match="network failure"):
+        WriterAgent(client).write(
+            _experience_writer_idea(),
+            raw_source="오슬로에서 산 체크셔츠로 출근 코디를 해봤다.",
+        )
+
+    assert len(client.calls) == 1
+
+
 def test_writer_allows_material_explicitly_present_in_contract():
     idea = _experience_writer_idea("오슬로에서 산 면 소재 빈티지 체크셔츠로 출근 코디를 해봤다.")
     writer = writer_with_response(
@@ -559,7 +758,7 @@ def test_writer_experience_validator_does_not_classify_general_effect_as_owned_i
 
 def test_writer_rejects_unsupported_rifit_service_reframing():
     idea = _experience_writer_idea()
-    idea.idea.rifit_connection = "리핏의 의류 순환과 다음 사용으로 연결"
+    idea.idea.rifit_connection = "의류 순환 서비스와 다음 사용으로 연결"
     writer = writer_with_response(
         idea.idea.title,
         "오슬로에서 산 체크셔츠로 출근 코디를 소개합니다. 리패션 서비스는 요즘 많은 브랜드가 제공합니다.",
@@ -572,6 +771,61 @@ def test_writer_rejects_unsupported_rifit_service_reframing():
         assert "unsupported" in str(error).lower()
     else:
         raise AssertionError("Unsupported RIFIT reframing should be rejected")
+
+
+def test_source_grounded_mode_does_not_require_editorial_rifit_mention():
+    idea = _experience_writer_idea()
+    idea.idea.rifit_connection = "리핏의 의류 순환과 다음 사용으로 연결"
+    writer = writer_with_response(
+        idea.idea.title,
+        "오슬로에서 산 체크셔츠로 인턴 출근 코디를 해봤습니다. "
+        "체크셔츠는 다른 하의와 매치해볼 수 있습니다.",
+        idea.idea.keyword,
+    )
+
+    post = writer.write(
+        idea,
+        raw_source="오슬로에서 산 체크셔츠로 인턴 출근 코디를 해봤다.",
+        content_plan=ContentPlan(writing_script="명시된 경험만 사용합니다."),
+    )
+
+    assert "리핏" not in post.content
+    assert len(writer.client.calls) == 1
+
+
+def test_source_grounded_mode_keeps_rifit_safety_checks():
+    idea = _experience_writer_idea()
+    idea.idea.rifit_connection = "리핏의 의류 순환과 다음 사용으로 연결"
+    writer = writer_with_response(
+        idea.idea.title,
+        "오슬로에서 산 체크셔츠로 인턴 출근 코디를 해봤습니다. "
+        "리패션 서비스는 요즘 많은 브랜드가 제공합니다.",
+        idea.idea.keyword,
+    )
+
+    with pytest.raises(ValueError, match="unsupported"):
+        writer.write(
+            idea,
+            raw_source="오슬로에서 산 체크셔츠로 인턴 출근룩으로 입어봤다.",
+            content_plan=ContentPlan(writing_script="명시된 경험만 사용합니다."),
+        )
+
+
+def test_generative_mode_keeps_rifit_connection_preservation():
+    idea = make_idea(
+        "지속 가능한 의류 소비 방법",
+        "의류 순환 방법",
+        "의류 순환을 실천하는 방법을 안내하는 가이드",
+    )
+    idea.idea.rifit_connection = "의류 순환 서비스와 다음 사용으로 연결"
+    writer = writer_with_response(
+        idea.idea.title,
+        "의류 순환 방법을 정리합니다. 옷을 다시 활용하는 기준을 살펴봅니다.",
+        idea.idea.keyword,
+    )
+
+    with pytest.raises(ValueError, match="rifit connection"):
+        writer.write(idea, raw_source="의류 순환 방법을 가이드로 정리하고 싶다.")
 
 
 def test_non_numeric_title_generates_normally():

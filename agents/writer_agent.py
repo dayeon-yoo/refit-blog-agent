@@ -16,6 +16,19 @@ from models.schemas import BlogPost, ContentPlan, ScoredIdea
 class WriterAgent:
     """Generate a BlogPost from a BlogIdea through the configured LLM client."""
 
+    _SOURCE_GROUNDED_CLAIM_POLICY = {
+        "PERSONAL_FACT": "raw_source_only",
+        "GENERAL_SUGGESTION": "allowed within the requested topic; reader-facing and conditional, never autobiographical",
+        "EXTERNAL_CLAIM": "raw_source or research_context only; no research_context is supplied",
+        "EDITORIAL_TRANSITION": "allowed when it is not presented as an objective fact or personal result",
+    }
+    _GENERATIVE_CLAIM_POLICY = {
+        "PERSONAL_FACT": "use supplied source/context only",
+        "GENERAL_SUGGESTION": "allowed as part of the planned topic",
+        "EXTERNAL_CLAIM": "requires supplied factual or research context",
+        "EDITORIAL_TRANSITION": "allowed when it is not presented as an objective fact",
+    }
+
     _NUMBER_PROMISE = re.compile(r"(?P<count>\d+)\s*(?:가지|개|단계)")
     _NUMBERED_HEADING = re.compile(r"^##\s+(?P<number>\d+)[.)]\s+(?P<label>.+?)\s*$", re.MULTILINE)
     _TOKEN = re.compile(r"[가-힣A-Za-z][가-힣A-Za-z0-9_-]{1,}")
@@ -94,7 +107,26 @@ class WriterAgent:
         blog_idea = idea.idea
         promised_count = self._promised_count(blog_idea.title)
         planning_mode = ContentPlannerAgent.planning_mode(raw_source, blog_idea)
-        editorial_context = build_safe_editorial_context(blog_idea, raw_source)
+        full_editorial_context = build_safe_editorial_context(blog_idea, raw_source)
+        safe_rifit_direction = str(full_editorial_context.get("rifit_editorial_direction", ""))
+        editorial_context = full_editorial_context
+        source_grounded = planning_mode in {
+            "source_grounded_editorial",
+            "experience_deterministic",
+        }
+        claim_authority_policy = (
+            self._SOURCE_GROUNDED_CLAIM_POLICY
+            if source_grounded
+            else self._GENERATIVE_CLAIM_POLICY
+        )
+        if source_grounded:
+            # Keep only framing fields in the metadata channel. Raw source and
+            # the plan carry factual and structural authority separately.
+            editorial_context = {
+                key: editorial_context[key]
+                for key in ("title", "keyword", "content_format", "target_reader")
+                if key in editorial_context
+            }
         safe_angle = blog_idea.angle if not raw_source.strip() else " ".join(
             value for value in (
                 editorial_context.get("title"),
@@ -102,7 +134,6 @@ class WriterAgent:
                 editorial_context.get("content_format"),
             ) if value
         )
-        safe_rifit_direction = str(editorial_context.get("rifit_editorial_direction", ""))
         payload = {
             "title": blog_idea.title,
             "keyword": blog_idea.keyword,
@@ -124,11 +155,35 @@ class WriterAgent:
                 **editorial_context,
                 "raw_source": raw_source,
                 "writing_script": content_plan.writing_script if content_plan else "",
+                "factual_authority": "raw_source only",
+                "writing_script_role": "structure and ordering only",
+                "metadata_role": "editorial framing only" if source_grounded else "editorial context",
+                "claim_authority_policy": claim_authority_policy,
             },
             "required_item_count": promised_count,
         }
 
         generation_prompt = self.prompt
+        if planning_mode in {"source_grounded_editorial", "experience_deterministic"}:
+            generation_prompt += (
+                "\n\nFACTUAL GROUNDING CONTRACT: In this source-grounded path, "
+                "raw_source is the factual whitelist and writing_script is only a "
+                "structure/order guide. Before drafting, silently separate facts "
+                "explicitly stated by the author from ideas that would merely make "
+                "the article richer. Use the former as facts; turn the latter into "
+                "reader-facing suggestions or conditional language, or omit them. "
+                "Do not claim an unstated outfit, color, material, fit, product "
+                "quality, purchase reason, scene, feeling, reaction, result, "
+                "environmental effect, economic effect, popularity, or workplace "
+                "event. A sentence is not grounded merely because its subject "
+                "appears in raw_source: preserve the stated event relationship. "
+                "For example, a shirt bought in Oslo does not establish working "
+                "in Oslo. Claim types are separate: PERSONAL_FACT requires raw_source; "
+                "GENERAL_SUGGESTION may be reader-facing and conditional within the "
+                "requested topic; EXTERNAL_CLAIM requires raw_source or supplied research; "
+                "EDITORIAL_TRANSITION may connect ideas but is not factual evidence. "
+                "Keep the article short rather than inventing details."
+            )
         if planning_mode == "source_grounded_editorial":
             generation_prompt += (
                 "\n\nWRITING MODE: SOURCE-GROUNDED EDITORIAL. "
@@ -148,14 +203,23 @@ class WriterAgent:
                 "\n\nWRITING MODE: GROUNDED EXPERIENCE. "
                 "Describe only personal events and details explicitly stated in raw_source. "
                 "Do not fill gaps with a first day, workplace, shopping scene, outfit detail, "
-                "reaction, emotion, environmental effect, or financial result. "
+                "product property, reaction, emotion, environmental effect, or financial result. "
                 "General styling ideas are allowed only as reader suggestions or conditions, "
-                "not as something the author did. If the source is brief, keep the article brief "
-                "rather than inventing experience or general claims."
+                "not as something the author did. Use wording such as '매치해볼 수 있어요' "
+                "rather than '매치했어요' for an unstated combination. Do not describe a "
+                "garment as breathable, flattering, unique, comfortable, or well suited "
+                "unless raw_source provides that property or assessment. If the source is "
+                "brief, keep the article brief rather than inventing experience or general claims."
             )
         post = self.client.generate_structured(generation_prompt, BlogPost, payload)
         try:
-            self._validate_contract(blog_idea, post, promised_count, raw_source=raw_source)
+            self._validate_contract(
+                blog_idea,
+                post,
+                promised_count,
+                raw_source=raw_source,
+                planning_mode=planning_mode,
+            )
         except ValueError as error:
             self._emit_validation_diagnostics(
                 error,
@@ -164,8 +228,85 @@ class WriterAgent:
                 raw_source,
                 content_plan,
             )
-            raise
+            grounding_issues = self._grounding_issues_for_correction(
+                blog_idea, post, raw_source, error
+            )
+            if not grounding_issues:
+                raise
+            if get_settings().debug:
+                print(
+                    "[Writer Grounding Issues For Correction] "
+                    + json.dumps(grounding_issues, ensure_ascii=False),
+                    file=sys.stderr,
+                )
+
+            correction_payload = {
+                **payload,
+                "previous_draft": post.model_dump(mode="json"),
+                "grounding_issues": grounding_issues,
+                "correction_mode": "controlled_grounding_correction",
+            }
+            correction_prompt = self._grounding_correction_prompt()
+            corrected_post = self.client.generate_structured(
+                correction_prompt, BlogPost, correction_payload
+            )
+            try:
+                self._validate_contract(
+                    blog_idea,
+                    corrected_post,
+                    promised_count,
+                    raw_source=raw_source,
+                    planning_mode=planning_mode,
+                )
+            except ValueError as corrected_error:
+                if get_settings().debug:
+                    print(
+                        "[Writer Corrected Draft Validation Failure]",
+                        file=sys.stderr,
+                    )
+                self._emit_validation_diagnostics(
+                    corrected_error,
+                    blog_idea,
+                    corrected_post,
+                    raw_source,
+                    content_plan,
+                )
+                raise
+            return corrected_post
         return post
+
+    @classmethod
+    def _grounding_issues_for_correction(
+        cls, idea, post: BlogPost, raw_source: str, error: ValueError
+    ) -> list[dict[str, str]]:
+        """Return only source-grounding issues eligible for one correction call."""
+        if "unsupported personal experience" not in str(error).lower():
+            return []
+        if not raw_source.strip() or not cls._is_experience_contract(idea):
+            return []
+        return cls._collect_experience_grounding_issues(
+            idea, post.content, raw_source=raw_source
+        )
+
+    @staticmethod
+    def _grounding_correction_prompt() -> str:
+        return (
+            "\n\nCONTROLLED GROUNDING CORRECTION: Revise the previous BlogPost only to "
+            "remove or narrow the supplied grounding issues. Use raw_source as the "
+            "only factual authority and writing_script as structure only. Delete "
+            "unsupported personal events, feelings, reactions, outfit details, "
+            "product properties, and effects, or rewrite them as clearly general "
+            "or conditional reader suggestions when appropriate. Do not add new "
+            "facts, experiences, examples, products, environmental or economic "
+            "claims. Keep claim types separate: PERSONAL_FACT requires raw_source; "
+            "GENERAL_SUGGESTION may remain reader-facing and conditional within the "
+            "requested topic, but must not become a personal claim or an objective "
+            "effect claim; EXTERNAL_CLAIM requires supplied factual/research authority; "
+            "EDITORIAL_TRANSITION is only connective language. Do not change the "
+            "title, keyword, or editorial direction. "
+            "Prefer a shorter accurate article over replacement content. Return "
+            "only the same BlogPost schema."
+        )
 
     @staticmethod
     def _emit_validation_diagnostics(
@@ -209,6 +350,7 @@ class WriterAgent:
         post: BlogPost,
         promised_count: Optional[int],
         raw_source: str = "",
+        planning_mode: str = "generative_structured",
     ) -> None:
         if post.keyword.strip() != idea.keyword.strip():
             raise ValueError("Writer output changed the BlogIdea keyword")
@@ -228,10 +370,18 @@ class WriterAgent:
             raise ValueError("Writer output does not reflect the BlogIdea title")
         cls._validate_factual_claims(idea, content)
         cls._validate_experience_grounding(idea, content, raw_source=raw_source)
-        cls._validate_rifit_grounding(idea, content)
+        source_grounded = planning_mode in {
+            "source_grounded_editorial",
+            "experience_deterministic",
+        }
+        cls._validate_rifit_grounding(
+            idea,
+            content,
+            require_named_brand=not source_grounded,
+        )
         if not cls._preserves_title_contrast(idea, content):
             raise ValueError("Writer output does not preserve the title's contrast")
-        if not cls._preserves_rifit_connection(idea, content):
+        if not source_grounded and not cls._preserves_rifit_connection(idea, content):
             raise ValueError("Writer output omits the relevant rifit connection")
 
         if promised_count is None:
@@ -352,8 +502,27 @@ class WriterAgent:
 
     @classmethod
     def _validate_experience_grounding(cls, idea, content: str, raw_source: str = "") -> None:
-        if not cls._is_experience_contract(idea):
+        issues = cls._collect_experience_grounding_issues(idea, content, raw_source=raw_source)
+        if not issues:
             return
+        first = issues[0]
+        if first.get("marker"):
+            raise ValueError(
+                "Writer output invents unsupported personal experience or event: "
+                f"{first['marker']}: marker={first['marker']!r}; "
+                f"sentence={first['sentence']!r}"
+            )
+        raise ValueError(
+            "Writer output invents unsupported personal experience or event: "
+            f"sentence={first['sentence']!r}"
+        )
+
+    @classmethod
+    def _collect_experience_grounding_issues(
+        cls, idea, content: str, raw_source: str = ""
+    ) -> list[dict[str, str]]:
+        if not cls._is_experience_contract(idea):
+            return []
         # A raw memo is the only authority for personal facts. BlogIdea fields
         # remain useful for detecting an experience-shaped article, but their
         # editorial expansions must not authorize new autobiographical details.
@@ -373,6 +542,7 @@ class WriterAgent:
                     ) if value
                 )
             )
+        issues: list[dict[str, str]] = []
         for sentence in re.split(r"(?<=[.!?。！？])\s+|\n+", content):
             is_personal_claim = cls._PERSONAL_EXPERIENCE_CLAIM.search(sentence)
             has_owned_item_claim = cls._OWNED_ITEM_CLAIM.search(sentence)
@@ -396,19 +566,21 @@ class WriterAgent:
                 # wording or a strict sentence-level overlap ratio.
                 required_hits = 1 if len(meaningful_terms) <= 1 else 2
                 if grounded_hits < required_hits:
-                    raise ValueError(
-                        "Writer output invents unsupported personal experience or event: "
-                        f"sentence={sentence.strip()!r}"
-                    )
-            unsupported = [marker for marker in cls._EXPERIENCE_DETAIL_MARKERS + cls._EXPERIENCE_EVENT_MARKERS
-                           if marker in compact_sentence
-                           and not cls._marker_is_grounded(marker, contract)]
+                    issues.append({"category": "unsupported_personal_experience", "marker": "", "sentence": sentence.strip()})
+            unsupported = [
+                marker
+                for marker in cls._EXPERIENCE_DETAIL_MARKERS + cls._EXPERIENCE_EVENT_MARKERS
+                if cls._contains_experience_marker(sentence, marker)
+                and not cls._marker_is_grounded(marker, contract)
+            ]
             if unsupported:
-                raise ValueError(
-                    "Writer output invents unsupported personal experience or event: "
-                    f"{unsupported[0]}: marker={unsupported[0]!r}; "
-                    f"sentence={sentence.strip()!r}"
-                )
+                for marker in unsupported:
+                    issues.append({
+                        "category": "unsupported_personal_experience_detail",
+                        "marker": marker,
+                        "sentence": sentence.strip(),
+                    })
+        return issues
 
     @classmethod
     def _marker_is_grounded(cls, marker: str, contract: str) -> bool:
@@ -421,7 +593,18 @@ class WriterAgent:
         return False
 
     @classmethod
-    def _validate_rifit_grounding(cls, idea, content: str) -> None:
+    def _contains_experience_marker(cls, sentence: str, marker: str) -> bool:
+        """Avoid treating a short marker as a substring of an unrelated word."""
+        marker = cls._compact(marker)
+        sentence = sentence or ""
+        if len(marker) <= 1:
+            return bool(re.search(rf"(?<![가-힣A-Za-z0-9]){re.escape(marker)}(?![가-힣A-Za-z0-9])", sentence))
+        return marker in cls._compact(sentence)
+
+    @classmethod
+    def _validate_rifit_grounding(
+        cls, idea, content: str, require_named_brand: bool = True
+    ) -> None:
         connection = (idea.rifit_connection or "").lower()
         output = content.lower()
         if not connection:
@@ -430,7 +613,7 @@ class WriterAgent:
             raise ValueError("Writer output invented an unsupported RIFIT service concept")
         if re.search(r"(?:요즘|현재)?\s*많은 브랜드가", output):
             raise ValueError("Writer output invented an unsupported external brand claim")
-        if any(marker in connection for marker in ("리핏", "rifit")):
+        if require_named_brand and any(marker in connection for marker in ("리핏", "rifit")):
             if "리핏" not in output and "rifit" not in output:
                 raise ValueError("Writer output omitted the named RIFIT connection")
 
